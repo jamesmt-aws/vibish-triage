@@ -525,9 +525,8 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		}
 	}
 
-	// Severity and effort weights for bang-for-buck scoring
+	// Severity weights for scoring
 	severityWeight := map[string]float64{"high": 3.0, "medium": 1.0, "low": 0.5}
-	effortDivisor := map[string]float64{"low": 1.0, "medium": 3.0, "high": 9.0}
 
 	// Build fix-themes.jsonl
 	type fullTheme struct {
@@ -553,11 +552,7 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		if sw == 0 {
 			sw = 1.0
 		}
-		ed := effortDivisor[dt.EffortEstimate]
-		if ed == 0 {
-			ed = 3.0
-		}
-		score := sw * float64(len(issues)) / ed
+		score := sw * float64(len(issues))
 		themesOut = append(themesOut, fullTheme{
 			ThemeID:        dt.ThemeID,
 			Title:          dt.Title,
