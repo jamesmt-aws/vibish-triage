@@ -1,0 +1,21 @@
+project: karpenter
+repos:
+  - kubernetes-sigs/karpenter
+  - aws/karpenter-provider-aws
+state: open
+domain_context: |
+  Karpenter is a Kubernetes node autoscaler. It provisions and deprovisions
+  nodes based on pod scheduling needs. Key subsystems: provisioning (launching
+  nodes for pending pods), consolidation (replacing underutilized nodes with
+  cheaper ones), drift detection (replacing nodes whose spec no longer matches
+  the NodePool), and disruption budgets (limiting how many nodes can be
+  disrupted simultaneously).
+
+  Common failure modes: consolidation moves pods when the savings don't justify
+  the disruption, drift triggers sequential replacements instead of batching,
+  nodes provision past declared limits because unregistered NodeClaims aren't
+  counted, and users cannot tell what decision Karpenter made or why.
+known_fixes:
+  - title: "Only execute consolidation moves that are worth it"
+    effort: low
+    rationale: "Single check in the consolidation decision path. No new APIs, no schema changes."
