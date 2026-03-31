@@ -229,12 +229,81 @@ func runAggregate(ctx context.Context, opus, sonnet inference.Client, cfg *confi
 		return err
 	}
 
-	// Step 2: Assign each issue to themes (parallel Sonnet)
+	// Step 2: Merge themes that address the same behavioral decision (Opus)
+	themes, err = runMergeThemes(ctx, opus, dataDir, themes)
+	if err != nil {
+		return err
+	}
+
+	// Step 3: Assign each issue to themes (parallel Sonnet)
 	if err := runAssignIssues(ctx, sonnet, cfg, dataDir, promptsDir, themes); err != nil {
 		return err
 	}
 
 	return nil
+}
+
+func runMergeThemes(ctx context.Context, client inference.Client, dataDir string, themes string) (string, error) {
+	themeCount := 0
+	for _, line := range strings.Split(themes, "\n") {
+		if strings.TrimSpace(line) != "" {
+			themeCount++
+		}
+	}
+	slog.Info("merge-themes: starting", "input_themes", themeCount)
+
+	system := `You are reviewing a list of fix themes for redundancy. Your job is to merge
+themes that address the same behavioral decision into a single theme.
+
+The test: if two themes both answer the question "should the system do X?" for
+the same X, they are one theme. Different failure modes of the same decision
+are not separate themes.
+
+Examples of merges:
+- "Add minimum savings threshold for consolidation" + "Prevent premature
+  consolidation of new nodes" + "Fix scheduling simulation to prevent churn"
+  → ONE theme: "Evaluate whether each consolidation move is worth executing"
+  (all are about the decision "should this consolidation move happen?")
+- "Emit pod-level disruption events" + "Fix metric registration" + "Add
+  structured logging" → ONE theme: "Surface decisions and errors as observable
+  signals" (all are about "is the operator told what happened?")
+
+Do NOT merge themes that address genuinely different decisions even if they
+touch the same subsystem. "Batch drift replacements" and "Detect drift by
+semantic comparison" are different decisions (how many vs whether).
+
+Return the merged theme list as JSONL. Preserve all fields: theme_id, title,
+description, theme_type, severity, effort_estimate, effort_rationale. For
+merged themes, pick the broadest title, combine descriptions, use the highest
+severity, and use the lowest effort among the merged themes. Update theme_id.`
+
+	user := "Here are the themes to review:\n\n```jsonl\n" + themes + "\n```\n\n" +
+		"Merge themes that address the same behavioral decision. Return the result as ```jsonl ... ```."
+
+	text, usage, err := inference.Converse(ctx, client, system, user,
+		inference.WithMaxTokens(16384))
+	if err != nil {
+		return "", fmt.Errorf("merge-themes call failed: %w", err)
+	}
+	slog.Info("merge-themes: done",
+		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens,
+		"cost", fmt.Sprintf("$%.4f", usage.Cost()))
+
+	merged := stripCodeFences(extractFencedBlock(text, "jsonl"))
+	if merged == "" {
+		merged = stripCodeFences(text)
+	}
+
+	mergedCount := 0
+	for _, line := range strings.Split(merged, "\n") {
+		if strings.TrimSpace(line) != "" {
+			mergedCount++
+		}
+	}
+	slog.Info("merge-themes: result", "output_themes", mergedCount, "merged", themeCount-mergedCount)
+
+	os.WriteFile(filepath.Join(dataDir, "draft-themes.jsonl"), []byte(merged), 0644)
+	return merged, nil
 }
 
 // runDraftThemes asks Opus to read all extractions and produce a theme list (no issue assignments).
@@ -270,11 +339,13 @@ func runDraftThemes(ctx context.Context, client inference.Client, cfg *config.Co
 	userBuilder.WriteString("- theme_id (kebab-case, named after the decision that changes)\n")
 	userBuilder.WriteString("- title (imperative sentence: what the system should do differently)\n")
 	userBuilder.WriteString("- description (1-2 sentences: what behavioral change this represents)\n")
+	userBuilder.WriteString("- theme_type (behavioral_change / feature_surface / infrastructure)\n")
+	userBuilder.WriteString("- severity (high / medium / low)\n")
 	userBuilder.WriteString("- effort_estimate (low/medium/high)\n")
 	userBuilder.WriteString("- effort_rationale (1 sentence)\n\n")
-	userBuilder.WriteString("Name themes by the decision that should change, not by the feature area.\n")
+	userBuilder.WriteString("Name themes by the behavioral decision that should change, not by the feature area or mechanism.\n")
 	userBuilder.WriteString("Keep descriptions concise. Do NOT assign issue numbers. Do NOT list examples.\n")
-	userBuilder.WriteString("Aim for 40-60 themes. Merge aggressively. If two themes would have the same engineering owner and the same PR, they are one theme.\n")
+	userBuilder.WriteString("Aim for 40-55 themes. Merge aggressively. If multiple themes describe different failure modes of the same behavioral decision, they are one theme.\n")
 	userBuilder.WriteString("Return a JSONL block wrapped in ```jsonl ... ```.")
 	user := userBuilder.String()
 
@@ -415,6 +486,8 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		ThemeID         string `json:"theme_id"`
 		Title           string `json:"title"`
 		Description     string `json:"description"`
+		ThemeType       string `json:"theme_type"`
+		Severity        string `json:"severity"`
 		EffortEstimate  string `json:"effort_estimate"`
 		EffortRationale string `json:"effort_rationale"`
 	}
@@ -452,14 +525,21 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		}
 	}
 
+	// Severity and effort weights for bang-for-buck scoring
+	severityWeight := map[string]float64{"high": 3.0, "medium": 1.0, "low": 0.5}
+	effortDivisor := map[string]float64{"low": 1.0, "medium": 3.0, "high": 9.0}
+
 	// Build fix-themes.jsonl
 	type fullTheme struct {
-		ThemeID        string   `json:"theme_id"`
-		Title          string   `json:"title"`
-		Description    string   `json:"description"`
-		IssueNumbers   []int    `json:"issue_numbers"`
-		IssueCount     int      `json:"issue_count"`
-		EffortEstimate string   `json:"effort_estimate"`
+		ThemeID        string  `json:"theme_id"`
+		Title          string  `json:"title"`
+		Description    string  `json:"description"`
+		ThemeType      string  `json:"theme_type"`
+		Severity       string  `json:"severity"`
+		IssueNumbers   []int   `json:"issue_numbers"`
+		IssueCount     int     `json:"issue_count"`
+		EffortEstimate string  `json:"effort_estimate"`
+		Score          float64 `json:"score"`
 	}
 
 	var themesOut []fullTheme
@@ -469,19 +549,31 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		if len(issues) == 0 {
 			continue
 		}
+		sw := severityWeight[dt.Severity]
+		if sw == 0 {
+			sw = 1.0
+		}
+		ed := effortDivisor[dt.EffortEstimate]
+		if ed == 0 {
+			ed = 3.0
+		}
+		score := sw * float64(len(issues)) / ed
 		themesOut = append(themesOut, fullTheme{
 			ThemeID:        dt.ThemeID,
 			Title:          dt.Title,
 			Description:    dt.Description,
+			ThemeType:      dt.ThemeType,
+			Severity:       dt.Severity,
 			IssueNumbers:   issues,
 			IssueCount:     len(issues),
 			EffortEstimate: dt.EffortEstimate,
+			Score:          score,
 		})
 	}
 
-	// Sort by issue count descending
+	// Sort by score descending
 	sort.Slice(themesOut, func(i, j int) bool {
-		return themesOut[i].IssueCount > themesOut[j].IssueCount
+		return themesOut[i].Score > themesOut[j].Score
 	})
 
 	// Write fix-themes.jsonl
@@ -498,10 +590,11 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 	// Write fix-priority.md
 	var md strings.Builder
 	md.WriteString("# Fix Priority\n\n## Coverage Summary\n\n")
-	md.WriteString("| Rank | Fix | Issues | Effort |\n")
-	md.WriteString("|------|-----|--------|--------|\n")
+	md.WriteString("| Rank | Fix | Issues | Severity | Effort | Score |\n")
+	md.WriteString("|------|-----|--------|----------|--------|-------|\n")
 	for i, t := range themesOut {
-		fmt.Fprintf(&md, "| %d | %s | %d | %s |\n", i+1, t.Title, t.IssueCount, t.EffortEstimate)
+		fmt.Fprintf(&md, "| %d | %s | %d | %s | %s | %.1f |\n",
+			i+1, t.Title, t.IssueCount, t.Severity, t.EffortEstimate, t.Score)
 	}
 
 	allIssues := make(map[int]bool)
@@ -512,19 +605,6 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 	}
 	total := countLines(filepath.Join(dataDir, "issues.jsonl"))
 
-	top3, top5, top10 := 0, 0, 0
-	seen := make(map[int]bool)
-	for i, t := range themesOut {
-		for _, n := range t.IssueNumbers {
-			if !seen[n] {
-				seen[n] = true
-				if i < 3 { top3++ }
-				if i < 5 { top5++ }
-				if i < 10 { top10++ }
-			}
-		}
-	}
-	// Recount properly
 	top3Issues := make(map[int]bool)
 	top5Issues := make(map[int]bool)
 	top10Issues := make(map[int]bool)
@@ -542,8 +622,8 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 
 	md.WriteString("\n## Fix Details\n")
 	for i, t := range themesOut {
-		fmt.Fprintf(&md, "\n### %d. %s (%d issues)\n\n%s\n\nEffort: %s\n",
-			i+1, t.Title, t.IssueCount, t.Description, t.EffortEstimate)
+		fmt.Fprintf(&md, "\n### %d. %s (%d issues)\n\n%s\n\nType: %s | Severity: %s | Effort: %s | Score: %.1f\n",
+			i+1, t.Title, t.IssueCount, t.Description, t.ThemeType, t.Severity, t.EffortEstimate, t.Score)
 	}
 
 	return os.WriteFile(filepath.Join(dataDir, "fix-priority.md"), []byte(md.String()), 0644)
