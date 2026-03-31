@@ -914,43 +914,21 @@ func countLines(path string) int {
 	return count
 }
 
-// extractCodeBlocks pulls ```jsonl and ```markdown fenced blocks from LLM output.
-func extractCodeBlocks(text string) (jsonl, markdown string) {
-	jsonl = extractFencedBlock(text, "jsonl")
-	if jsonl == "" {
-		jsonl = extractFencedBlock(text, "json")
-	}
-	markdown = extractFencedBlock(text, "markdown")
-	if markdown == "" {
-		markdown = extractFencedBlock(text, "md")
-	}
-	return
-}
-
 func extractFencedBlock(text, lang string) string {
 	fence := "```" + lang
-	start := indexOf(text, fence)
+	start := strings.Index(text, fence)
 	if start < 0 {
 		return ""
 	}
-	// Skip the fence line
-	start = indexOf(text[start:], "\n")
-	if start < 0 {
+	content := text[start+len(fence):]
+	nl := strings.Index(content, "\n")
+	if nl < 0 {
 		return ""
 	}
-	content := text[indexOf(text, fence)+len(fence)+1:]
-	end := indexOf(content, "```")
+	content = content[nl+1:]
+	end := strings.Index(content, "```")
 	if end < 0 {
 		return ""
 	}
 	return content[:end]
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }
