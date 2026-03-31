@@ -267,13 +267,14 @@ func runDraftThemes(ctx context.Context, client inference.Client, cfg *config.Co
 		userBuilder.WriteString("Create new themes for unaddressed issues if a pattern emerges.\n")
 	}
 	userBuilder.WriteString("\n\nIdentify the fix themes. For each theme, return:\n")
-	userBuilder.WriteString("- theme_id (kebab-case)\n")
-	userBuilder.WriteString("- title (short, human-readable)\n")
+	userBuilder.WriteString("- theme_id (kebab-case, named after the decision that changes)\n")
+	userBuilder.WriteString("- title (imperative sentence: what the system should do differently)\n")
 	userBuilder.WriteString("- description (1-2 sentences: what behavioral change this represents)\n")
 	userBuilder.WriteString("- effort_estimate (low/medium/high)\n")
 	userBuilder.WriteString("- effort_rationale (1 sentence)\n\n")
+	userBuilder.WriteString("Name themes by the decision that should change, not by the feature area.\n")
 	userBuilder.WriteString("Keep descriptions concise. Do NOT assign issue numbers. Do NOT list examples.\n")
-	userBuilder.WriteString("Aim for 40-80 themes. Merge near-duplicates. Each theme should be a distinct behavioral change.\n")
+	userBuilder.WriteString("Aim for 40-60 themes. Merge aggressively. If two themes would have the same engineering owner and the same PR, they are one theme.\n")
 	userBuilder.WriteString("Return a JSONL block wrapped in ```jsonl ... ```.")
 	user := userBuilder.String()
 
