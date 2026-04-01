@@ -88,18 +88,19 @@ that all answer "should this consolidation move happen?").
 themes based on its extraction. Only theme IDs and titles are sent
 per-call (not full descriptions) to minimize input tokens.
 
-Themes are ranked by bang-for-buck score:
+Themes are ranked by severity-weighted issue count:
 
 ```
-score = severity_weight × issue_count / effort_divisor
+score = severity_weight × issue_count
 
 severity_weight:  high = 3.0,  medium = 1.0,  low = 0.5
-effort_divisor:   low  = 1.0,  medium = 3.0,  high = 9.0
 ```
 
-This pushes low-effort behavioral fixes above high-count feature-request
-buckets. A theme with 14 high-severity issues at low effort (score: 42)
-outranks a theme with 45 medium-severity issues at medium effort (score: 15).
+This pushes high-severity behavioral fixes above high-count feature-request
+buckets. A theme with 15 high-severity issues (score: 45) outranks a theme
+with 41 medium-severity feature requests (score: 41). Effort estimates are
+included in the output as metadata but not used in ranking — they are too
+unstable between runs to carry weight in the formula.
 
 Output: `data/fix-themes.jsonl`, `data/fix-priority.md`, `data/draft-themes.jsonl`
 
