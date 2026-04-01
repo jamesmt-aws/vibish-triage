@@ -253,24 +253,26 @@ func runMergeThemes(ctx context.Context, client inference.Client, dataDir string
 	slog.Info("merge-themes: starting", "input_themes", themeCount)
 
 	system := `You are reviewing a list of fix themes for redundancy. Your job is to merge
-themes that address the same behavioral decision into a single theme.
+themes that would be resolved by the same engineering effort.
 
-The test: if two themes both answer the question "should the system do X?" for
-the same X, they are one theme. Different failure modes of the same decision
-are not separate themes.
+The test: if fixing theme A would also fix most of theme B's issues (or vice
+versa), they are one theme. Different root causes that share the same fix are
+not separate themes.
 
 Examples of merges:
-- "Add minimum savings threshold for consolidation" + "Prevent premature
-  consolidation of new nodes" + "Fix scheduling simulation to prevent churn"
+- "Add minimum savings threshold for consolidation" + "Fix scheduling
+  simulation to prevent churn" + "Prevent premature consolidation of new
+  nodes" + "Improve multi-node consolidation candidate selection"
   → ONE theme: "Evaluate whether each consolidation move is worth executing"
-  (all are about the decision "should this consolidation move happen?")
+  (all are fixed by better pre-execution evaluation in the consolidation path)
 - "Emit pod-level disruption events" + "Fix metric registration" + "Add
   structured logging" → ONE theme: "Surface decisions and errors as observable
-  signals" (all are about "is the operator told what happened?")
+  signals" (all are fixed by adding instrumentation to existing code paths)
 
-Do NOT merge themes that address genuinely different decisions even if they
-touch the same subsystem. "Batch drift replacements" and "Detect drift by
-semantic comparison" are different decisions (how many vs whether).
+Do NOT merge themes where the fixes are genuinely independent — different
+code paths, different subsystems, different engineers. "Batch drift
+replacements" and "Detect drift by semantic comparison" touch the same
+subsystem but require different code changes.
 
 Return the merged theme list as JSONL. Preserve all fields: theme_id, title,
 description, theme_type, severity, effort_estimate, effort_rationale. For

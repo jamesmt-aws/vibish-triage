@@ -54,9 +54,11 @@ Examples of decisions that should be ONE theme each:
 
 ## How to Cluster
 
-Group fixes that describe the same behavioral change even if worded differently.
-"Add disruption cost check" and "evaluate whether the move is worth the
-disruption" and "compare savings against restart cost" are all the same fix.
+Group issues that would be resolved by the **same code change**, even if the
+root causes differ. "Consolidation ignores restart cost," "kube-scheduler
+places pods differently than simulated," and "multi-node consolidation picks
+bad candidates" all have different root causes but the same fix: better
+evaluation before executing consolidation moves. That is one theme.
 
 An issue can map to multiple themes.
 
