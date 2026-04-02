@@ -1,5 +1,7 @@
 data/
+data-*/
 runs/
 vibish-triage
 analysis/
 designs/
+karpenter-*.md

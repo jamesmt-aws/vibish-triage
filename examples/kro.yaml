@@ -1,0 +1,24 @@
+project: kro
+repos:
+  - kubernetes-sigs/kro
+state: open
+domain_context: |
+  KRO (Kube Resource Orchestrator) is a Kubernetes operator that lets users
+  define custom resource types composed of other Kubernetes resources. Users
+  write a ResourceGraphDefinition (RGD) that declares which resources to
+  create, how they depend on each other, and what fields to expose on the
+  custom API. KRO generates a CRD from the RGD, then reconciles instances
+  of that CRD by creating and managing the constituent resources.
+
+  Key subsystems: schema generation (inferring CRD schemas from resource
+  templates), DAG resolution (ordering resource creation by dependencies),
+  CEL expression evaluation (computing field values from other resources),
+  status aggregation (deriving the custom resource's status from child
+  resource states), and the reconciler (watching instances and driving
+  resources to desired state).
+
+  Common failure modes: CEL expressions that reference fields not yet
+  available, schema inference that produces incorrect OpenAPI types,
+  resources created in wrong order due to missing dependency edges,
+  status conditions that don't reflect actual child resource health,
+  and CRD updates that break existing instances.
