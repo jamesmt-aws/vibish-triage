@@ -24,7 +24,7 @@ var (
 
 func init() {
 	runCmd.Flags().StringVar(&configFile, "config", "triage.yaml", "path to config file")
-	runCmd.Flags().StringVar(&step, "step", "all", "step to run: download, extract, aggregate, evaluate, or all")
+	runCmd.Flags().StringVar(&step, "step", "all", "step to run: download, extract, label, aggregate, evaluate, or all")
 	runCmd.Flags().DurationVar(&timeout, "timeout", 90*time.Minute, "max time per LLM step")
 	runCmd.Flags().StringVar(&dataDir, "data-dir", "./data", "directory for input/output data")
 	runCmd.Flags().StringVar(&promptsDir, "prompts-dir", "./prompts", "directory containing prompt templates")
@@ -42,7 +42,8 @@ Use --step to run a single step. Steps:
 
   download   Fetch issues from GitHub via gh CLI
   extract    Diagnose each issue and propose fixes (Sonnet, parallel)
-  aggregate  Cluster fixes into themes, rank by impact (Opus, single call)
+  label      Normalize proposed fixes into canonical labels (Sonnet, parallel)
+  aggregate  Cluster labels into themes, rank by impact (Opus, single call)
   evaluate   Verify theme assignments per issue (Sonnet, parallel)
   all        Run all steps in sequence (default)
 
@@ -52,7 +53,7 @@ Examples:
   vibish-triage run --config triage.yaml --step download
   vibish-triage run --config triage.yaml --step extract --timeout 30m`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		validSteps := map[string]bool{"all": true, "download": true, "extract": true, "aggregate": true, "evaluate": true}
+		validSteps := map[string]bool{"all": true, "download": true, "extract": true, "label": true, "aggregate": true, "evaluate": true}
 		if !validSteps[step] {
 			return fmt.Errorf("invalid step %q, must be one of: all, download, extract, aggregate, evaluate", step)
 		}

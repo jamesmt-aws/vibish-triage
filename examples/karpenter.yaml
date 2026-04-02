@@ -15,7 +15,3 @@ domain_context: |
   the disruption, drift triggers sequential replacements instead of batching,
   nodes provision past declared limits because unregistered NodeClaims aren't
   counted, and users cannot tell what decision Karpenter made or why.
-known_fixes:
-  - title: "Only execute consolidation moves that are worth it"
-    effort: low
-    rationale: "Single check in the consolidation decision path. No new APIs, no schema changes."

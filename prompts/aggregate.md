@@ -1,8 +1,9 @@
-# Aggregate: Identify Fix Themes from Issue Diagnoses
+# Aggregate: Cluster Fix Labels into Themes
 
-You will receive {{.IssueCount}} issue extractions, each with a what_went_wrong
-diagnosis and 1-3 proposed fixes. Your job is to find the underlying fix themes:
-groups of issues that need the same behavioral change.
+You will receive a frequency table of fix labels extracted from {{.IssueCount}}
+issues. Each label was proposed by one or more issues as a behavioral change
+that would fix them. Your job is to cluster these labels into themes: groups
+of labels that address the same behavioral decision.
 
 ## How to Name Themes
 
@@ -54,17 +55,14 @@ Examples of decisions that should be ONE theme each:
 
 ## How to Cluster
 
-Group issues that would be resolved by the **same code change**, even if the
-root causes differ. "Consolidation ignores restart cost," "kube-scheduler
-places pods differently than simulated," and "multi-node consolidation picks
-bad candidates" all have different root causes but the same fix: better
-evaluation before executing consolidation moves. That is one theme.
+Group labels that would be resolved by the **same code change**. Labels like
+"consolidation-savings-threshold," "consolidation-churn-prevention," and
+"consolidation-candidate-selection" all describe different aspects of the same
+decision ("should this consolidation move happen?") and belong in one theme.
 
-An issue can map to multiple themes.
-
-If a group of issues are all feature requests for configuration surface area
-(e.g., "expose field X", "add option Y"), that is one theme: "Expand
-configuration surface for [subsystem]". Do not create one theme per field.
+The label frequency counts are hard evidence. If three labels total 45 issues,
+that is one large theme, not three small ones. Do not split themes that share
+the same behavioral decision just because they have different labels.
 
 Aim for 40-55 themes. Merge aggressively. Err on the side of fewer, broader
 themes rather than more, narrower ones.
@@ -92,27 +90,6 @@ issues it contains:
 
 {{.DomainContext}}
 {{end}}
-{{if .KnownFixes}}
-
-## Effort Calibration
-
-These fixes are already understood. Use them as anchors for effort estimates.
-{{range .KnownFixes}}
-> **{{.Title}}** (effort: {{.Effort}})
-> {{.Rationale}}
-{{end}}
-
-A theme is **low** effort if it changes decision logic within existing code
-paths — a single check, a threshold, a condition. No new APIs, no schema
-changes. Most behavioral-decision themes that fix an existing decision are low.
-
-A theme is **medium** only if it requires new logic across multiple components,
-new API fields, or new controllers.
-
-A theme is **high** only if it requires architectural rework or a new subsystem.
-
-Err on the side of low. If in doubt between low and medium, choose low.
-{{end}}
 
 ## Output Schema
 
@@ -122,5 +99,4 @@ For each theme, return:
 - description (1-2 sentences)
 - theme_type (behavioral_change / feature_surface / infrastructure)
 - severity (high / medium / low)
-- effort_estimate (low / medium / high)
-- effort_rationale (1 sentence)
+- labels (array of input labels that belong to this theme)

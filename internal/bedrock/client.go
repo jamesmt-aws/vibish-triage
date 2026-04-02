@@ -26,6 +26,7 @@ import (
 const (
 	ModelOpus   = "claude-opus"
 	ModelSonnet = "claude-sonnet"
+	ModelHaiku  = "claude-haiku"
 
 	// defaultMaxTokens matches the AI SDK's default for Claude on Bedrock.
 	// When extended thinking is enabled, the thinking budget is added on top.
@@ -48,6 +49,7 @@ type modelPricing struct {
 var pricingTable = map[string]modelPricing{
 	"claude-sonnet-4": {3.0 / 1_000_000, 15.0 / 1_000_000},
 	"claude-opus-4":   {5.0 / 1_000_000, 25.0 / 1_000_000},
+	"claude-haiku-4":  {0.8 / 1_000_000, 4.0 / 1_000_000},
 }
 
 // lookupPricing finds pricing by matching a model family key against the full

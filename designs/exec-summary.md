@@ -6,7 +6,7 @@ staffing decisions. They need to know what to work on, in what order, and why.
 
 ## Inputs
 
-- `fix-priority.md` -- ranked list of fix themes with issue counts and effort.
+- `fix-priority.md` -- ranked list of fix themes with issue counts and severity.
 - `fix-themes.jsonl` -- structured theme data with issue numbers.
 - `evaluated.jsonl` -- per-issue verification of theme assignments.
 
@@ -22,11 +22,11 @@ and understand the situation.
 
 ### 2. Recommended priorities (table)
 
-A table of the top 10 fixes ranked by impact/effort. Columns:
+A table of the top 10 fixes ranked by severity-weighted impact. Columns:
 - Priority (1-10)
 - Fix (imperative sentence)
 - Issues affected
-- Effort (low/medium/high)
+- Severity (high/medium/low)
 - Why now (1 sentence: what happens if this isn't fixed)
 
 ### 3. Three categories

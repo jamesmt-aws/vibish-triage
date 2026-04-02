@@ -3,7 +3,7 @@
 LLM-assisted issue triage for open source projects. Downloads open issues
 from GitHub, diagnoses root causes, clusters fixes into themes, and verifies
 the clustering. Produces a ranked list of high-leverage fixes scored by
-bang-for-buck: `severity × issue_count / effort`.
+severity-weighted impact: `severity × issue_count`.
 
 ## Prerequisites
 
@@ -23,6 +23,7 @@ go build -o vibish-triage .
 # Or run one step at a time
 ./vibish-triage run --config examples/karpenter.yaml --step download
 ./vibish-triage run --config examples/karpenter.yaml --step extract
+./vibish-triage run --config examples/karpenter.yaml --step label
 ./vibish-triage run --config examples/karpenter.yaml --step aggregate
 ./vibish-triage run --config examples/karpenter.yaml --step evaluate
 ```
@@ -41,20 +42,11 @@ domain_context: |
   Describe what the project does and its key subsystems.
   This context is included in every LLM prompt to ground
   the diagnoses in domain knowledge.
-known_fixes:
-  - title: "A fix you already understand"
-    effort: low
-    rationale: "Used as a calibration point for effort estimates."
 ```
-
-The `known_fixes` field is important: it anchors effort estimates. If you
-have a fix that you know is low effort (e.g., a single check in an existing
-decision path), include it. The model uses it to calibrate all other effort
-ratings.
 
 ## Pipeline
 
-Four steps. The first is Go code; the rest are LLM calls via Bedrock.
+Five steps. The first is Go code; the rest are LLM calls via Bedrock.
 
 ### 1. Download
 
@@ -71,13 +63,24 @@ not the surface complaint) and proposes 1-3 fixes.
 
 Output: `data/extracted.jsonl`
 
-### 3. Aggregate (three-pass: Opus draft → Opus merge → parallel Sonnet assign)
+### 3. Label (parallel Sonnet)
 
-**Draft themes.** One Opus call reads all extractions and produces
-40-55 theme definitions. Themes are named by the behavioral decision
-that should change, not by the feature area affected. Each theme is
-classified by type (`behavioral_change`, `feature_surface`, or
-`infrastructure`), severity (`high`, `medium`, `low`), and effort.
+Normalizes each issue's proposed fixes into short canonical fix labels
+(e.g., "consolidation-savings-threshold", "drift-ignore-external-mutations").
+Labels are reusable across issues: two issues that need the same code change
+get the same label. This produces a bottom-up vocabulary for clustering.
+
+Output: `data/labeled.jsonl`
+
+### 4. Aggregate (three-pass: Opus draft → Opus merge → parallel Sonnet assign)
+
+**Draft themes.** One Opus call reads the label frequency table (label →
+issue count) and clusters labels into 40-55 theme definitions. The
+quantitative label counts anchor granularity: labels totaling 45 issues
+stay as one theme rather than being split by mechanism. Themes are named
+by the behavioral decision that should change, classified by type
+(`behavioral_change`, `feature_surface`, or `infrastructure`) and
+severity (`high`, `medium`, `low`).
 
 **Merge themes.** A second Opus call reviews the draft themes and
 merges any that address the same behavioral decision. This prevents
@@ -98,13 +101,11 @@ severity_weight:  high = 3.0,  medium = 1.0,  low = 0.5
 
 This pushes high-severity behavioral fixes above high-count feature-request
 buckets. A theme with 15 high-severity issues (score: 45) outranks a theme
-with 41 medium-severity feature requests (score: 41). Effort estimates are
-included in the output as metadata but not used in ranking — they are too
-unstable between runs to carry weight in the formula.
+with 41 medium-severity feature requests (score: 41).
 
 Output: `data/fix-themes.jsonl`, `data/fix-priority.md`, `data/draft-themes.jsonl`
 
-### 4. Evaluate (parallel Sonnet)
+### 5. Evaluate (parallel Sonnet)
 
 For each issue, verifies that assigned themes actually address the root
 cause. Only relevant themes are sent per-call (not all themes). Produces
@@ -126,9 +127,10 @@ round.
 |------|-------------|
 | `data/issues.jsonl` | Raw issues from GitHub |
 | `data/extracted.jsonl` | Per-issue diagnosis and proposed fixes |
+| `data/labeled.jsonl` | Per-issue canonical fix labels |
 | `data/draft-themes.jsonl` | Theme definitions after merge pass |
 | `data/fix-themes.jsonl` | Themes with issue assignments, scores, and counts |
-| `data/fix-priority.md` | Ranked table of themes (by bang-for-buck score) |
+| `data/fix-priority.md` | Ranked table of themes (by severity-weighted impact) |
 | `data/evaluated.jsonl` | Per-issue verification of theme assignments |
 
 ## Cost and timing
@@ -169,7 +171,7 @@ and hitting Bedrock rate limits.
 
 ```
 --config        Path to config file (default: triage.yaml)
---step          Step to run: download, extract, aggregate, evaluate, all (default: all)
+--step          Step to run: download, extract, label, aggregate, evaluate, all (default: all)
 --timeout       Max time per LLM step (default: 90m)
 --data-dir      Directory for input/output data (default: ./data)
 --prompts-dir   Directory containing prompt templates (default: ./prompts)
@@ -184,7 +186,6 @@ Prompts live in `prompts/` as Go templates. Variables available:
 |----------|--------|
 | `{{.Project}}` | `project` in config |
 | `{{.DomainContext}}` | `domain_context` in config |
-| `{{.KnownFixes}}` | `known_fixes` in config |
 | `{{.IssueCount}}` | Counted from `issues.jsonl` |
 
 ## Verifying results
@@ -231,7 +232,7 @@ import json
 themes = [json.loads(l) for l in open('data/fix-themes.jsonl') if l.strip()]
 for i, t in enumerate(themes[:10]):
     print(f'{i+1:2d}. [{t[\"issue_count\"]:3d}] score={t[\"score\"]:.0f} '
-          f'sev={t[\"severity\"]} effort={t[\"effort_estimate\"]} '
+          f'sev={t[\"severity\"]} '
           f'type={t[\"theme_type\"]}')
     print(f'    {t[\"title\"]}')
 "

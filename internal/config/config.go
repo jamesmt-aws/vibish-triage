@@ -7,18 +7,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type KnownFix struct {
-	Title     string `yaml:"title"`
-	Effort    string `yaml:"effort"`
-	Rationale string `yaml:"rationale"`
-}
-
 type Config struct {
-	Project       string     `yaml:"project"`
-	Repos         []string   `yaml:"repos"`
-	State         string     `yaml:"state"`
-	DomainContext string     `yaml:"domain_context"`
-	KnownFixes    []KnownFix `yaml:"known_fixes"`
+	Project       string   `yaml:"project"`
+	Repos         []string `yaml:"repos"`
+	State         string   `yaml:"state"`
+	DomainContext string   `yaml:"domain_context"`
 }
 
 func Load(path string) (*Config, error) {

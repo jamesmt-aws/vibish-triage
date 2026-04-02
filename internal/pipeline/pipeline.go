@@ -57,6 +57,18 @@ func Run(ctx context.Context, cfg *config.Config, step string, dataDir, promptsD
 		}
 	}
 
+	if step == "all" || step == "label" {
+		stepCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := runLabel(stepCtx, sonnet, cfg, dataDir)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("label failed: %w", err)
+		}
+		if step == "label" {
+			return nil
+		}
+	}
+
 	if step == "all" {
 		// Iterate: aggregate -> evaluate -> re-aggregate with feedback
 		// Stop when misattribution rate drops below threshold or max iterations.
@@ -130,7 +142,6 @@ func Run(ctx context.Context, cfg *config.Config, step string, dataDir, promptsD
 type templateData struct {
 	Project       string
 	DomainContext string
-	KnownFixes    []config.KnownFix
 	IssueCount    int
 }
 
@@ -167,7 +178,6 @@ func runExtract(ctx context.Context, client inference.Client, cfg *config.Config
 	system, err := renderPrompt(filepath.Join(promptsDir, "extract.md"), templateData{
 		Project:       cfg.Project,
 		DomainContext: cfg.DomainContext,
-		KnownFixes:    cfg.KnownFixes,
 		IssueCount:    len(issues),
 	})
 	if err != nil {
@@ -221,6 +231,136 @@ func runExtract(ctx context.Context, client inference.Client, cfg *config.Config
 	return writeResults(filepath.Join(dataDir, "extracted.jsonl"), results)
 }
 
+// runLabel normalizes each issue's potential_fixes into canonical fix labels.
+// Output: data/labeled.jsonl — one line per issue with {"number": N, "labels": ["label-a", "label-b"]}.
+func runLabel(ctx context.Context, client inference.Client, cfg *config.Config, dataDir string) error {
+	extractions, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl"))
+	if err != nil {
+		return err
+	}
+	slog.Info("label: starting", "issues", len(extractions))
+
+	system := `You normalize proposed fixes into short canonical labels.
+
+You will receive a JSON object with a what_went_wrong diagnosis and potential_fixes list.
+Return a JSON object with the issue number and 1-3 labels:
+
+{"number": 1234, "labels": ["label-one", "label-two"]}
+
+Label rules:
+- kebab-case, 3-6 words max
+- Name the behavioral decision that should change, not the mechanism or feature area
+- Two issues that need the same code change MUST get the same label
+- Two issues that need different code changes MUST get different labels
+- Labels should be reusable across issues. Think: "what label would 20 other similar issues also use?"
+
+Examples of good labels:
+- consolidation-savings-threshold
+- count-inflight-nodeclaims-against-limits
+- surface-disruption-blocking-reason
+- drift-ignore-external-mutations
+- batch-drift-replacements
+
+Examples of bad labels (too specific to one issue):
+- fix-issue-2922-consolidation-loop
+- add-min-savings-check-in-consolidation-controller
+- bottlerocket-toml-clusterdnsip-array`
+
+	if cfg.DomainContext != "" {
+		system += "\n\nDomain context:\n" + cfg.DomainContext
+	}
+
+	cwnd := newCwndController(initialCwnd, maxCwnd)
+	results := make([]json.RawMessage, len(extractions))
+	var totalUsage inference.Usage
+	var usageMu sync.Mutex
+	var completed int64
+	var labelErrors int64
+
+	var wg sync.WaitGroup
+	for i, ext := range extractions {
+		wg.Add(1)
+		go func(idx int, extraction json.RawMessage) {
+			defer wg.Done()
+			cwnd.acquire()
+
+			text, usage, throttled, err := converseWithRetry(ctx, client, system, string(extraction))
+			usageMu.Lock()
+			totalUsage = totalUsage.Add(usage)
+			usageMu.Unlock()
+
+			if throttled {
+				cwnd.onThrottle()
+			} else {
+				cwnd.onSuccess()
+			}
+
+			if err != nil {
+				atomic.AddInt64(&labelErrors, 1)
+				slog.Error("label: call failed", "index", idx, "error", err)
+				return
+			}
+			results[idx] = json.RawMessage(stripCodeFences(text))
+			n := atomic.AddInt64(&completed, 1)
+			if n%50 == 0 {
+				slog.Info("label: progress", "completed", n, "total", len(extractions))
+			}
+		}(i, ext)
+	}
+	wg.Wait()
+
+	slog.Info("label: done",
+		"completed", completed, "errors", labelErrors,
+		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
+		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
+
+	return writeResults(filepath.Join(dataDir, "labeled.jsonl"), results)
+}
+
+// buildLabelFrequencyTable reads labeled.jsonl and returns a sorted frequency table
+// of label -> issue numbers, plus the raw labeled data.
+func buildLabelFrequencyTable(dataDir string) (string, error) {
+	lines, err := readJSONL(filepath.Join(dataDir, "labeled.jsonl"))
+	if err != nil {
+		return "", err
+	}
+
+	type labeled struct {
+		Number int      `json:"number"`
+		Labels []string `json:"labels"`
+	}
+
+	labelIssues := make(map[string][]int)
+	for _, raw := range lines {
+		var l labeled
+		if json.Unmarshal(raw, &l) != nil || l.Number == 0 {
+			continue
+		}
+		for _, label := range l.Labels {
+			labelIssues[label] = append(labelIssues[label], l.Number)
+		}
+	}
+
+	// Sort by frequency descending
+	type entry struct {
+		label  string
+		issues []int
+	}
+	var entries []entry
+	for label, issues := range labelIssues {
+		entries = append(entries, entry{label, issues})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return len(entries[i].issues) > len(entries[j].issues)
+	})
+
+	var sb strings.Builder
+	for _, e := range entries {
+		fmt.Fprintf(&sb, "%s: %d issues %v\n", e.label, len(e.issues), e.issues)
+	}
+	return sb.String(), nil
+}
+
 // runAggregate drafts themes with Opus, then assigns issues with parallel Sonnet calls.
 func runAggregate(ctx context.Context, opus, sonnet inference.Client, cfg *config.Config, dataDir, promptsDir string, evalFeedback string) error {
 	// Step 1: Draft themes (Opus)
@@ -253,7 +393,7 @@ func runMergeThemes(ctx context.Context, client inference.Client, dataDir string
 	slog.Info("merge-themes: starting", "input_themes", themeCount)
 
 	system := `You are reviewing a list of fix themes for redundancy. Your job is to merge
-themes that would be resolved by the same engineering effort.
+themes that would be resolved by the same code change.
 
 The test: if fixing theme A would also fix most of theme B's issues (or vice
 versa), they are one theme. Different root causes that share the same fix are
@@ -275,9 +415,9 @@ replacements" and "Detect drift by semantic comparison" touch the same
 subsystem but require different code changes.
 
 Return the merged theme list as JSONL. Preserve all fields: theme_id, title,
-description, theme_type, severity, effort_estimate, effort_rationale. For
-merged themes, pick the broadest title, combine descriptions, use the highest
-severity, and use the lowest effort among the merged themes. Update theme_id.`
+description, theme_type, severity, labels. For merged themes, pick the broadest
+title, combine descriptions, use the highest severity, and union the labels
+arrays. Update theme_id.`
 
 	user := "Here are the themes to review:\n\n```jsonl\n" + themes + "\n```\n\n" +
 		"Merge themes that address the same behavioral decision. Return the result as ```jsonl ... ```."
@@ -308,19 +448,18 @@ severity, and use the lowest effort among the merged themes. Update theme_id.`
 	return merged, nil
 }
 
-// runDraftThemes asks Opus to read all extractions and produce a theme list (no issue assignments).
+// runDraftThemes asks Opus to cluster fix labels into themes using the label frequency table.
 func runDraftThemes(ctx context.Context, client inference.Client, cfg *config.Config, dataDir, promptsDir string, evalFeedback string) (string, error) {
-	extractions, err := os.ReadFile(filepath.Join(dataDir, "extracted.jsonl"))
+	labelTable, err := buildLabelFrequencyTable(dataDir)
 	if err != nil {
-		return "", fmt.Errorf("reading extracted.jsonl: %w", err)
+		return "", fmt.Errorf("building label frequency table: %w", err)
 	}
 	issueCount := countLines(filepath.Join(dataDir, "extracted.jsonl"))
-	slog.Info("draft-themes: starting", "extractions", issueCount)
+	slog.Info("draft-themes: starting", "issues", issueCount)
 
 	system, err := renderPrompt(filepath.Join(promptsDir, "aggregate.md"), templateData{
 		Project:       cfg.Project,
 		DomainContext: cfg.DomainContext,
-		KnownFixes:    cfg.KnownFixes,
 		IssueCount:    issueCount,
 	})
 	if err != nil {
@@ -328,8 +467,8 @@ func runDraftThemes(ctx context.Context, client inference.Client, cfg *config.Co
 	}
 
 	var userBuilder strings.Builder
-	userBuilder.WriteString("Here are all the extractions:\n\n")
-	userBuilder.Write(extractions)
+	userBuilder.WriteString("Here is the fix label frequency table. Each line is a label that issues proposed, the number of issues that used it, and their issue numbers.\n\n")
+	userBuilder.WriteString(labelTable)
 	if evalFeedback != "" {
 		userBuilder.WriteString("\n\n## Evaluation Feedback from Previous Round\n\n")
 		userBuilder.WriteString(evalFeedback)
@@ -337,18 +476,16 @@ func runDraftThemes(ctx context.Context, client inference.Client, cfg *config.Co
 		userBuilder.WriteString("Merge themes that overlap. Split themes that are too broad. ")
 		userBuilder.WriteString("Create new themes for unaddressed issues if a pattern emerges.\n")
 	}
-	userBuilder.WriteString("\n\nIdentify the fix themes. For each theme, return:\n")
+	userBuilder.WriteString("\n\nCluster these labels into fix themes. Labels that address the same behavioral decision should be merged into one theme. Labels that address different decisions must stay separate.\n\n")
+	userBuilder.WriteString("For each theme, return:\n")
 	userBuilder.WriteString("- theme_id (kebab-case, named after the decision that changes)\n")
 	userBuilder.WriteString("- title (imperative sentence: what the system should do differently)\n")
 	userBuilder.WriteString("- description (1-2 sentences: what behavioral change this represents)\n")
 	userBuilder.WriteString("- theme_type (behavioral_change / feature_surface / infrastructure)\n")
 	userBuilder.WriteString("- severity (high / medium / low)\n")
-	userBuilder.WriteString("- effort_estimate (low/medium/high)\n")
-	userBuilder.WriteString("- effort_rationale (1 sentence)\n\n")
-	userBuilder.WriteString("Name themes by the behavioral decision that should change, not by the feature area or mechanism.\n")
-	userBuilder.WriteString("Keep descriptions concise. Do NOT assign issue numbers. Do NOT list examples.\n")
-	userBuilder.WriteString("Aim for 40-55 themes. Merge aggressively. If multiple themes describe different failure modes of the same behavioral decision, they are one theme.\n")
-	userBuilder.WriteString("Return a JSONL block wrapped in ```jsonl ... ```.")
+	userBuilder.WriteString("- labels (array of the input labels that belong to this theme)\n\n")
+	userBuilder.WriteString("The label counts are hard evidence for theme size. A theme that merges labels totaling 45 issues is a big theme. Do not split it into sub-themes unless the labels genuinely require different code changes.\n")
+	userBuilder.WriteString("Aim for 40-55 themes. Return a JSONL block wrapped in ```jsonl ... ```.")
 	user := userBuilder.String()
 
 	text, usage, err := inference.Converse(ctx, client, system, user,
@@ -485,13 +622,11 @@ func buildCompactThemeContext(themes string) string {
 func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMessage) error {
 	// Parse draft themes
 	type draftTheme struct {
-		ThemeID         string `json:"theme_id"`
-		Title           string `json:"title"`
-		Description     string `json:"description"`
-		ThemeType       string `json:"theme_type"`
-		Severity        string `json:"severity"`
-		EffortEstimate  string `json:"effort_estimate"`
-		EffortRationale string `json:"effort_rationale"`
+		ThemeID     string `json:"theme_id"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		ThemeType   string `json:"theme_type"`
+		Severity    string `json:"severity"`
 	}
 
 	themesByID := make(map[string]*draftTheme)
@@ -532,15 +667,14 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 
 	// Build fix-themes.jsonl
 	type fullTheme struct {
-		ThemeID        string  `json:"theme_id"`
-		Title          string  `json:"title"`
-		Description    string  `json:"description"`
-		ThemeType      string  `json:"theme_type"`
-		Severity       string  `json:"severity"`
-		IssueNumbers   []int   `json:"issue_numbers"`
-		IssueCount     int     `json:"issue_count"`
-		EffortEstimate string  `json:"effort_estimate"`
-		Score          float64 `json:"score"`
+		ThemeID      string  `json:"theme_id"`
+		Title        string  `json:"title"`
+		Description  string  `json:"description"`
+		ThemeType    string  `json:"theme_type"`
+		Severity     string  `json:"severity"`
+		IssueNumbers []int   `json:"issue_numbers"`
+		IssueCount   int     `json:"issue_count"`
+		Score        float64 `json:"score"`
 	}
 
 	var themesOut []fullTheme
@@ -556,15 +690,14 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 		}
 		score := sw * float64(len(issues))
 		themesOut = append(themesOut, fullTheme{
-			ThemeID:        dt.ThemeID,
-			Title:          dt.Title,
-			Description:    dt.Description,
-			ThemeType:      dt.ThemeType,
-			Severity:       dt.Severity,
-			IssueNumbers:   issues,
-			IssueCount:     len(issues),
-			EffortEstimate: dt.EffortEstimate,
-			Score:          score,
+			ThemeID:      dt.ThemeID,
+			Title:        dt.Title,
+			Description:  dt.Description,
+			ThemeType:    dt.ThemeType,
+			Severity:     dt.Severity,
+			IssueNumbers: issues,
+			IssueCount:   len(issues),
+			Score:        score,
 		})
 	}
 
@@ -587,11 +720,11 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 	// Write fix-priority.md
 	var md strings.Builder
 	md.WriteString("# Fix Priority\n\n## Coverage Summary\n\n")
-	md.WriteString("| Rank | Fix | Issues | Severity | Effort | Score |\n")
-	md.WriteString("|------|-----|--------|----------|--------|-------|\n")
+	md.WriteString("| Rank | Fix | Issues | Severity | Score |\n")
+	md.WriteString("|------|-----|--------|----------|-------|\n")
 	for i, t := range themesOut {
-		fmt.Fprintf(&md, "| %d | %s | %d | %s | %s | %.1f |\n",
-			i+1, t.Title, t.IssueCount, t.Severity, t.EffortEstimate, t.Score)
+		fmt.Fprintf(&md, "| %d | %s | %d | %s | %.1f |\n",
+			i+1, t.Title, t.IssueCount, t.Severity, t.Score)
 	}
 
 	allIssues := make(map[int]bool)
@@ -619,8 +752,8 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 
 	md.WriteString("\n## Fix Details\n")
 	for i, t := range themesOut {
-		fmt.Fprintf(&md, "\n### %d. %s (%d issues)\n\n%s\n\nType: %s | Severity: %s | Effort: %s | Score: %.1f\n",
-			i+1, t.Title, t.IssueCount, t.Description, t.ThemeType, t.Severity, t.EffortEstimate, t.Score)
+		fmt.Fprintf(&md, "\n### %d. %s (%d issues)\n\n%s\n\nType: %s | Severity: %s | Score: %.1f\n",
+			i+1, t.Title, t.IssueCount, t.Description, t.ThemeType, t.Severity, t.Score)
 	}
 
 	return os.WriteFile(filepath.Join(dataDir, "fix-priority.md"), []byte(md.String()), 0644)
