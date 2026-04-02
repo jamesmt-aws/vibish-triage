@@ -135,17 +135,18 @@ round.
 
 ## Cost and timing
 
-Measured on Karpenter (567 open issues, March 2026):
+Measured on Karpenter (564 open issues, April 2026):
 
 | Step | Model | Calls | Time | Cost |
 |------|-------|-------|------|------|
 | Download | — | — | 18s | $0 |
-| Extract | Sonnet | 567 | 90s | $8 |
-| Draft themes | Opus | 1 | 2-3 min | $1 |
-| Merge themes | Opus | 1 | 2 min | $0.20 |
-| Assign issues | Sonnet | 567 | 45s | $4 |
-| Evaluate | Sonnet | 567 | 90s | $8 |
-| **Total** | | | **~10 min** | **~$21** |
+| Extract | Sonnet | 564 | 90s | $8 |
+| Label | Sonnet | 564 | 37s | $1.50 |
+| Draft themes | Opus | 1 | 1-2 min | $0.45 |
+| Merge themes | Opus | 1 | 1 min | $0.15 |
+| Assign issues | Sonnet | 564 | 45s | $4 |
+| Evaluate | Sonnet | 564 | 90s | $8 |
+| **Total** | | | **~8 min** | **~$22** |
 
 ## Theme naming
 
