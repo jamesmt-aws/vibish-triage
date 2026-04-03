@@ -32,6 +32,9 @@ func Run(ctx context.Context, cfg *config.Config, step string, dataDir, promptsD
 		if err := download.Run(cfg.Repos, cfg.State, dataDir, cacheDir, workers); err != nil {
 			return fmt.Errorf("download failed: %w", err)
 		}
+		if err := validateDownload(dataDir); err != nil {
+			return fmt.Errorf("download validation failed: %w", err)
+		}
 		if step == "download" {
 			return nil
 		}
@@ -228,7 +231,10 @@ func runExtract(ctx context.Context, client inference.Client, cfg *config.Config
 		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
 
-	return writeResults(filepath.Join(dataDir, "extracted.jsonl"), results)
+	if err := writeResults(filepath.Join(dataDir, "extracted.jsonl"), results); err != nil {
+		return err
+	}
+	return validateExtract(dataDir)
 }
 
 // runLabel normalizes each issue's potential_fixes into canonical fix labels.
@@ -314,7 +320,10 @@ Examples of bad labels (too specific to one issue):
 		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
 
-	return writeResults(filepath.Join(dataDir, "labeled.jsonl"), results)
+	if err := writeResults(filepath.Join(dataDir, "labeled.jsonl"), results); err != nil {
+		return err
+	}
+	return validateLabel(dataDir)
 }
 
 // buildLabelFrequencyTable reads labeled.jsonl and returns a sorted frequency table
@@ -618,8 +627,22 @@ func buildCompactThemeContext(themes string) string {
 }
 
 // assembleThemes combines draft theme definitions with per-issue assignments
-// into fix-themes.jsonl and fix-priority.md.
+// into fix-themes.jsonl and fix-priority.md. Reads extracted.jsonl to populate
+// sample_what_went_wrong per theme.
 func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMessage) error {
+	// Load extractions for sample_what_went_wrong.
+	extractionsByNumber := make(map[int]string)
+	if extLines, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl")); err == nil {
+		for _, raw := range extLines {
+			var e struct {
+				Number        int    `json:"number"`
+				WhatWentWrong string `json:"what_went_wrong"`
+			}
+			if json.Unmarshal(raw, &e) == nil && e.Number != 0 {
+				extractionsByNumber[e.Number] = e.WhatWentWrong
+			}
+		}
+	}
 	// Parse draft themes
 	type draftTheme struct {
 		ThemeID     string `json:"theme_id"`
@@ -667,14 +690,15 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 
 	// Build fix-themes.jsonl
 	type fullTheme struct {
-		ThemeID      string  `json:"theme_id"`
-		Title        string  `json:"title"`
-		Description  string  `json:"description"`
-		ThemeType    string  `json:"theme_type"`
-		Severity     string  `json:"severity"`
-		IssueNumbers []int   `json:"issue_numbers"`
-		IssueCount   int     `json:"issue_count"`
-		Score        float64 `json:"score"`
+		ThemeID            string   `json:"theme_id"`
+		Title              string   `json:"title"`
+		Description        string   `json:"description"`
+		ThemeType          string   `json:"theme_type"`
+		Severity           string   `json:"severity"`
+		IssueNumbers       []int    `json:"issue_numbers"`
+		IssueCount         int      `json:"issue_count"`
+		Score              float64  `json:"score"`
+		SampleWhatWentWrong []string `json:"sample_what_went_wrong,omitempty"`
 	}
 
 	var themesOut []fullTheme
@@ -689,15 +713,26 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 			sw = 1.0
 		}
 		score := sw * float64(len(issues))
+		// Pick first two sample diagnoses by issue number order.
+		var samples []string
+		for _, num := range issues {
+			if diag, ok := extractionsByNumber[num]; ok && diag != "" {
+				samples = append(samples, fmt.Sprintf("Issue #%d: %s", num, diag))
+				if len(samples) >= 2 {
+					break
+				}
+			}
+		}
 		themesOut = append(themesOut, fullTheme{
-			ThemeID:      dt.ThemeID,
-			Title:        dt.Title,
-			Description:  dt.Description,
-			ThemeType:    dt.ThemeType,
-			Severity:     dt.Severity,
-			IssueNumbers: issues,
-			IssueCount:   len(issues),
-			Score:        score,
+			ThemeID:             dt.ThemeID,
+			Title:               dt.Title,
+			Description:         dt.Description,
+			ThemeType:           dt.ThemeType,
+			Severity:            dt.Severity,
+			IssueNumbers:        issues,
+			IssueCount:          len(issues),
+			Score:               score,
+			SampleWhatWentWrong: samples,
 		})
 	}
 
@@ -756,7 +791,10 @@ func assembleThemes(dataDir string, draftThemes string, assignments []json.RawMe
 			i+1, t.Title, t.IssueCount, t.Description, t.ThemeType, t.Severity, t.Score)
 	}
 
-	return os.WriteFile(filepath.Join(dataDir, "fix-priority.md"), []byte(md.String()), 0644)
+	if err := os.WriteFile(filepath.Join(dataDir, "fix-priority.md"), []byte(md.String()), 0644); err != nil {
+		return err
+	}
+	return validateAggregate(dataDir)
 }
 
 // runEvaluate calls Sonnet once per issue with slow-start and per-issue theme filtering.
@@ -856,7 +894,13 @@ func runEvaluate(ctx context.Context, client inference.Client, cfg *config.Confi
 		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
 
-	return writeResults(filepath.Join(dataDir, "evaluated.jsonl"), results)
+	if err := writeResults(filepath.Join(dataDir, "evaluated.jsonl"), results); err != nil {
+		return err
+	}
+	if err := writeEvalSummary(dataDir); err != nil {
+		return err
+	}
+	return validateEvaluate(dataDir)
 }
 
 // buildThemeIndex creates a reverse index from issue position to relevant theme JSON lines.
