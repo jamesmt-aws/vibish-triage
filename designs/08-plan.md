@@ -125,10 +125,11 @@ Uses the same `--data-dir`, `--timeout` flags as `run`.
 ## Validation
 
 ### Structural
-- Each line in `plan-events.jsonl` is valid JSON with fields: ts, repo, number, event, kind, action, priority.
+- Each line in `plan-events.jsonl` is valid JSON with fields: ts, repo, number, event, kind, action, priority, effort.
 - `kind` in {bug_fix, small_change, needs_rfc, has_rfc, wont_do}.
 - `action` in {accept, reject, assign_aws, rework, needs_info, defer}.
 - `priority` in {p0, p1, p2, p3}.
+- `effort` in {trivial, small, medium, large}.
 - Line count matches `issues.jsonl`.
 - `action-plan.jsonl` exists with at least 10 actions.
 - Every issue in `action-plan.jsonl` appears in `plan-events.jsonl`.

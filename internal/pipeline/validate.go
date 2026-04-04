@@ -171,6 +171,7 @@ func validatePlan(dataDir string) error {
 	validKinds := map[string]bool{"bug_fix": true, "small_change": true, "needs_rfc": true, "has_rfc": true, "wont_do": true}
 	validActions := map[string]bool{"accept": true, "reject": true, "assign_aws": true, "rework": true, "needs_info": true, "defer": true}
 	validPriorities := map[string]bool{"p0": true, "p1": true, "p2": true, "p3": true}
+	validEfforts := map[string]bool{"trivial": true, "small": true, "medium": true, "large": true}
 
 	// Structural: plan-events.jsonl
 	issueCount := countLines(filepath.Join(dataDir, "issues.jsonl"))
@@ -196,6 +197,7 @@ func validatePlan(dataDir string) error {
 			Kind     string `json:"kind"`
 			Action   string `json:"action"`
 			Priority string `json:"priority"`
+			Effort   string `json:"effort"`
 		}
 		if err := json.Unmarshal(raw, &ev); err != nil {
 			return fmt.Errorf("plan-events line %d: invalid JSON: %w", i, err)
@@ -214,6 +216,9 @@ func validatePlan(dataDir string) error {
 		}
 		if !validPriorities[ev.Priority] {
 			return fmt.Errorf("plan-events line %d: invalid priority %q", i, ev.Priority)
+		}
+		if !validEfforts[ev.Effort] {
+			return fmt.Errorf("plan-events line %d: invalid effort %q", i, ev.Effort)
 		}
 		kindCounts[ev.Kind]++
 		actionCounts[ev.Action]++

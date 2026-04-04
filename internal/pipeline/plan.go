@@ -124,6 +124,9 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 	if err != nil {
 		return nil, fmt.Errorf("reading evaluated.jsonl: %w", err)
 	}
+	if len(extractions) != len(evaluations) {
+		return nil, fmt.Errorf("extracted.jsonl has %d lines, evaluated.jsonl has %d", len(extractions), len(evaluations))
+	}
 	slog.Info("plan-classify: starting", "issues", len(extractions))
 
 	system, err := renderPrompt(filepath.Join(promptsDir, "plan.md"), templateData{
@@ -200,6 +203,12 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
 
+	if total := int64(len(extractions)); total > 0 && errors*100/total > 10 {
+		slog.Warn("plan-classify: high error rate",
+			"errors", errors, "total", total,
+			"rate", fmt.Sprintf("%.1f%%", float64(errors)*100/float64(total)))
+	}
+
 	// Wrap results into planEvent structs and write plan-events.jsonl.
 	now := time.Now().UTC().Format(time.RFC3339)
 	var events []planEvent
@@ -264,6 +273,10 @@ func runPlanActionPlan(ctx context.Context, client inference.Client, dataDir str
 
 	var eventsText strings.Builder
 	for _, line := range eventLines {
+		var ev struct{ Number int `json:"number"` }
+		if json.Unmarshal(line, &ev) != nil || ev.Number == 0 {
+			continue
+		}
 		eventsText.Write(line)
 		eventsText.WriteByte('\n')
 	}

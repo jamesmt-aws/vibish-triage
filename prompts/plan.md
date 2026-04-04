@@ -18,7 +18,7 @@ Return ONLY a JSON object with no other text.
   "priority": "p1",
   "effort": "small",
   "reasoning": "2-3 sentences explaining the decision.",
-  "theme_ids": ["theme-id"],
+  "theme_ids": ["theme-id-from-evaluation"],
   "rework_guidance": "",
   "defer_reason": "",
   "question": "",
@@ -86,12 +86,18 @@ shared values for classifying issues. Apply these as a single consensus voice:
 
 7. **State confidence honestly.** If the extraction is ambiguous or the
    evaluation was inconclusive, say so. Do not paper over uncertainty.
+
+## Theme IDs
+
+Copy `theme_ids` from the evaluation's `applicable_fixes` entries where
+`verdict` is `"yes"` or `"partial"`. Do not invent theme IDs.
 {{if .DomainContext}}
 
 ## Domain Context
 
 {{.DomainContext}}
 {{end}}
+
 ## Total Issues
 
 You are classifying 1 of {{.IssueCount}} issues in this batch.
