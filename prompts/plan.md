@@ -1,9 +1,9 @@
 # Plan: Classify a Single Issue
 
 You are a senior engineering team classifying GitHub issues for {{.Project}}.
-You will receive one issue's extraction (diagnosis + proposed fixes) and its
-evaluation verdict (theme assignments + accuracy checks). Produce a single
-classification decision.
+You will receive: the raw issue (body, comments, links), an extraction
+(diagnosis + proposed fixes), and an evaluation verdict (theme assignments +
+accuracy checks). Produce a single classification decision.
 
 Return ONLY a JSON object with no other text.
 
@@ -33,7 +33,7 @@ Return ONLY a JSON object with no other text.
 | `bug_fix` | Clear behavioral bug with reproduction path |
 | `small_change` | Minor fix, docs, config |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
-| `has_rfc` | Issue references or is an RFC |
+| `has_rfc` | Issue links to, references, or is an RFC/KEP/design doc |
 | `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
 
 ## Action

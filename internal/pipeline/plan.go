@@ -116,6 +116,10 @@ func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, t
 
 // runPlanClassify runs Pass 1: one Sonnet call per issue.
 func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.Config, dataDir, promptsDir string) ([]planEvent, error) {
+	issues, err := readJSONL(filepath.Join(dataDir, "issues.jsonl"))
+	if err != nil {
+		return nil, fmt.Errorf("reading issues.jsonl: %w", err)
+	}
 	extractions, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl"))
 	if err != nil {
 		return nil, fmt.Errorf("reading extracted.jsonl: %w", err)
@@ -126,6 +130,9 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 	}
 	if len(extractions) != len(evaluations) {
 		return nil, fmt.Errorf("extracted.jsonl has %d lines, evaluated.jsonl has %d", len(extractions), len(evaluations))
+	}
+	if len(extractions) != len(issues) {
+		return nil, fmt.Errorf("extracted.jsonl has %d lines, issues.jsonl has %d", len(extractions), len(issues))
 	}
 	slog.Info("plan-classify: starting", "issues", len(extractions))
 
@@ -170,8 +177,8 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 			}
 			json.Unmarshal(extractions[idx], &ext)
 
-			user := fmt.Sprintf("Issue #%d: %s\n\nExtraction:\n%s\n\nEvaluation:\n%s",
-				ext.Number, ext.Title, extraction, evaluation)
+			user := fmt.Sprintf("Issue #%d: %s\n\nRaw issue:\n%s\n\nExtraction:\n%s\n\nEvaluation:\n%s",
+				ext.Number, ext.Title, string(issues[idx]), extraction, evaluation)
 
 			text, usage, throttled, err := converseWithRetry(ctx, client, system, user)
 			usageMu.Lock()

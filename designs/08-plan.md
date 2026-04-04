@@ -26,9 +26,10 @@ Mr. Gold) is embedded in the classification system prompt. No real names.
 
 ### Pass 1: Classify (Sonnet, parallel)
 
-For each issue, send: the extraction, the evaluation verdict (themes +
-verdicts from evaluated.jsonl), and the issue title/number. The full issue
-JSON is not re-sent -- the extraction already distilled it.
+For each issue, send: the raw issue JSON (body, comments, links), the
+extraction, and the evaluation verdict. The raw issue is included because
+the extraction discards cross-references (links to RFCs, KEPs, related
+issues) that are needed to classify `has_rfc` correctly.
 
 The system prompt encodes the team review perspective as shared values.
 One consensus position per issue. No individual opinions.
@@ -122,9 +123,9 @@ Measured on Karpenter (567 open issues, April 2026):
 
 | Pass | Model | Calls | Time | Cost |
 |------|-------|-------|------|------|
-| Classify | Sonnet | 567 | 73s | $5.02 |
+| Classify | Sonnet | 567 | ~90s | ~$8 |
 | Action plan | Opus | 1 | 9 min | $1.39 |
-| **Total** | | | **~10 min** | **$6.41** |
+| **Total** | | | **~10 min** | **~$9** |
 
 ## Validation
 
