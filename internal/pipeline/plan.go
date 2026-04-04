@@ -231,6 +231,11 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 			continue
 		}
 
+		effort := c.Effort
+		if effort == "" {
+			effort = "small"
+		}
+
 		ev := planEvent{
 			Timestamp:      now,
 			Repo:           c.Repo,
@@ -241,7 +246,7 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 			Priority:       c.Priority,
 			Reasoning:      c.Reasoning,
 			ThemeIDs:       c.ThemeIDs,
-			Effort:         c.Effort,
+			Effort:         effort,
 			ReworkGuidance: c.ReworkGuidance,
 			DeferReason:    c.DeferReason,
 			Question:       c.Question,
@@ -293,6 +298,8 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 	var iterations int
 	var prevAssignments map[int][]string
 
+	var lastAssignments map[int][]string
+
 	for iter := range maxIterations {
 		iterations = iter + 1
 		slog.Info("plan-em: iteration", "round", iterations)
@@ -302,6 +309,7 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		if err != nil {
 			return nil, iterations, 0, fmt.Errorf("plan assign (round %d): %w", iterations, err)
 		}
+		lastAssignments = assignments
 
 		// Check convergence.
 		if prevAssignments != nil {
@@ -311,7 +319,6 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 				"rate", fmt.Sprintf("%.1f%%", rate*100))
 			if rate < stabilityThreshold {
 				slog.Info("plan-em: stable, stopping")
-				actions = assembleActions(actions, assignments)
 				break
 			}
 		}
@@ -324,6 +331,9 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		}
 		slog.Info("plan-em: refined", "actions", len(actions))
 	}
+
+	// Always rebuild issue lists from the final assignments.
+	actions = assembleActions(actions, lastAssignments)
 
 	// Sort by priority then issue count descending.
 	priorityOrder := map[string]int{"p0": 0, "p1": 1, "p2": 2, "p3": 3}

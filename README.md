@@ -152,9 +152,9 @@ Measured on Karpenter (564 open issues, April 2026):
 | Merge themes | Opus | 1 | 1 min | $0.15 |
 | Assign issues | Sonnet | 564 | 45s | $4 |
 | Evaluate | Sonnet | 564 | 90s | $8 |
-| Plan (classify) | Sonnet | 564 | 73s | $5 |
-| Plan (action plan) | Opus | 1 | 9 min | $1.40 |
-| **Total** | | | **~18 min** | **~$28** |
+| Plan (classify) | Sonnet | 567 | 91s | $9.50 |
+| Plan (EM, 3 rounds) | Sonnet+Opus | 1701+3 | 12 min | $39.50 |
+| **Total** | | | **~24 min** | **~$71** |
 
 ## Theme naming
 
@@ -247,19 +247,20 @@ for i, t in enumerate(themes[:10]):
 "
 ```
 
-### 6. Plan (parallel Sonnet + single Opus)
+### 6. Plan (EM-style: classify + iterative assign/refine)
 
 Classifies every issue (kind, action, priority, effort) from a team review
-perspective, then consolidates into an action plan where each action covers
-1:N issues.
+perspective, then iteratively assigns issues to actions and refines action
+boundaries (EM-style). Three phases: Sonnet classifies, code seeds draft
+actions from themes, then Sonnet assigns + Opus refines for up to 3 rounds.
 
 The team review perspective is encoded as shared values from four anonymous
 reviewers (Mr. Red, Mr. Blue, Mr. Green, Mr. Gold). Values: diagnosis before
 action, layer responsibility, silent failure is worst, earned complexity,
 existing primitives, tradeoff disclosure, honest uncertainty.
 
-Measured on Karpenter (567 issues): 62% accept, 33% defer, 2% reject.
-227 actions covering 540 unique issues. $6.41, ~10 minutes.
+Measured on Karpenter (567 issues): 106 actions, 0 orphans, 3 EM rounds.
+49% accept, 40% defer, 5% reject, 5% needs_info. $49, ~16 minutes.
 
 Output: `data/plan-events.jsonl`, `data/action-plan.jsonl`, `data/plan-summary.json`
 

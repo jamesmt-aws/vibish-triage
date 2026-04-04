@@ -144,12 +144,12 @@ Counts by kind, action, priority, plus EM iteration stats.
 ```json
 {
   "total_issues": 567,
-  "by_kind": {"bug_fix": 172, "small_change": 198, "needs_rfc": 187, "has_rfc": 1, "wont_do": 9},
-  "by_action": {"accept": 352, "reject": 11, "assign_aws": 6, "needs_info": 9, "defer": 189},
-  "by_priority": {"p0": 2, "p1": 65, "p2": 301, "p3": 199},
-  "action_plan_count": 85,
-  "em_iterations": 2,
-  "orphaned_issues": 12
+  "by_kind": {"bug_fix": 135, "small_change": 202, "needs_rfc": 210, "has_rfc": 6, "wont_do": 14},
+  "by_action": {"accept": 278, "reject": 26, "assign_aws": 4, "needs_info": 29, "defer": 226},
+  "by_priority": {"p0": 1, "p1": 42, "p2": 260, "p3": 264},
+  "action_plan_count": 106,
+  "em_iterations": 3,
+  "orphaned_issues": 0
 }
 ```
 
@@ -163,18 +163,24 @@ Uses the same `--data-dir`, `--timeout` flags as `run`.
 
 ## Cost and Timing
 
-Estimated for Karpenter (567 open issues):
+Measured on Karpenter (567 open issues, April 2026):
 
-| Phase | Model | Calls | Est. Cost |
-|-------|-------|-------|-----------|
-| Classify | Sonnet | 567 | ~$8 |
-| Seed | code | 0 | $0 |
-| Assign (per round) | Sonnet | 567 | ~$4 |
-| Refine (per round) | Opus | 1 | ~$0.50 |
-| **Total (2 rounds)** | | | **~$17** |
+| Phase | Model | Calls | Time | Cost |
+|-------|-------|-------|------|------|
+| Classify | Sonnet | 567 | 91s | $9.48 |
+| Seed | code | 0 | instant | $0 |
+| Assign (round 1) | Sonnet | 567 | 55s | $7.90 |
+| Refine (round 1) | Opus | 1 | 3.5 min | $0.46 |
+| Assign (round 2) | Sonnet | 567 | 50s | $14.34 |
+| Refine (round 2) | Opus | 1 | 4 min | $0.51 |
+| Assign (round 3) | Sonnet | 567 | 44s | $15.88 |
+| Refine (round 3) | Opus | 1 | 4.5 min | $0.52 |
+| **Total (3 rounds)** | | | **~16 min** | **~$49** |
 
-More expensive than the single-Opus approach but avoids token limits and
-produces better action boundaries.
+Assign cost increases each round because the action context grows as
+Opus refines descriptions. Classify dominates wall-clock time on the
+first run; subsequent runs could skip classify with a `--skip-classify`
+flag (not yet implemented).
 
 ## Validation
 
