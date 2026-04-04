@@ -26,6 +26,9 @@ go build -o vibish-triage .
 ./vibish-triage run --config examples/karpenter.yaml --step label
 ./vibish-triage run --config examples/karpenter.yaml --step aggregate
 ./vibish-triage run --config examples/karpenter.yaml --step evaluate
+
+# After a full run, classify issues and produce an action plan
+./vibish-triage plan --config examples/karpenter.yaml
 ```
 
 ## Config
@@ -46,7 +49,7 @@ domain_context: |
 
 ## Pipeline
 
-Five steps. The first is Go code; the rest are LLM calls via Bedrock.
+Six steps. The first is Go code; the rest are LLM calls via Bedrock.
 
 ### 1. Download
 
@@ -132,6 +135,9 @@ round.
 | `data/fix-themes.jsonl` | Themes with issue assignments, scores, and counts |
 | `data/fix-priority.md` | Ranked table of themes (by severity-weighted impact) |
 | `data/evaluated.jsonl` | Per-issue verification of theme assignments |
+| `data/plan-events.jsonl` | Per-issue classification (kind, action, priority) |
+| `data/action-plan.jsonl` | Consolidated work plan (1 action : N issues) |
+| `data/plan-summary.json` | Distribution counts for plan classifications |
 
 ## Cost and timing
 
@@ -146,7 +152,9 @@ Measured on Karpenter (564 open issues, April 2026):
 | Merge themes | Opus | 1 | 1 min | $0.15 |
 | Assign issues | Sonnet | 564 | 45s | $4 |
 | Evaluate | Sonnet | 564 | 90s | $8 |
-| **Total** | | | **~8 min** | **~$22** |
+| Plan (classify) | Sonnet | 564 | 73s | $5 |
+| Plan (action plan) | Opus | 1 | 9 min | $1.40 |
+| **Total** | | | **~18 min** | **~$28** |
 
 ## Theme naming
 
@@ -238,6 +246,22 @@ for i, t in enumerate(themes[:10]):
     print(f'    {t[\"title\"]}')
 "
 ```
+
+### 6. Plan (parallel Sonnet + single Opus)
+
+Classifies every issue (kind, action, priority, effort) from a team review
+perspective, then consolidates into an action plan where each action covers
+1:N issues.
+
+The team review perspective is encoded as shared values from four anonymous
+reviewers (Mr. Red, Mr. Blue, Mr. Green, Mr. Gold). Values: diagnosis before
+action, layer responsibility, silent failure is worst, earned complexity,
+existing primitives, tradeoff disclosure, honest uncertainty.
+
+Measured on Karpenter (567 issues): 62% accept, 33% defer, 2% reject.
+227 actions covering 540 unique issues. $6.41, ~10 minutes.
+
+Output: `data/plan-events.jsonl`, `data/action-plan.jsonl`, `data/plan-summary.json`
 
 ## Known gaps
 

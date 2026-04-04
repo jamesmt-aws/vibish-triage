@@ -52,9 +52,11 @@ Each call returns a classification.
 | `accept` | Do it. Bug fixes, small changes, implementations of accepted RFCs. |
 | `reject` | Close it. Wrong layer, wont_do, duplicate. |
 | `assign_aws` | Needs an AWS employee. Specify expertise in `assignee_hint`. |
-| `rework` | Send back with guidance in `rework_guidance`. |
 | `needs_info` | Ask a specific question in `question` field. |
 | `defer` | Not now. Reason in `defer_reason` (e.g., "defer until RFC"). |
+
+Note: `rework` is reserved for future PR planning. For issues, the model
+uses `accept` (with guidance in reasoning) or `defer` instead.
 
 **priority**: p0 (safety violation), p1 (cost/perf pain, many users),
 p2 (real but workaround exists), p3 (nice to have).
@@ -98,11 +100,11 @@ Counts by kind, action, and priority. Also includes distribution checks:
 
 ```json
 {
-  "total_issues": 564,
-  "by_kind": {"bug_fix": 89, "small_change": 42, "needs_rfc": 65, "has_rfc": 12, "wont_do": 120},
-  "by_action": {"accept": 95, "reject": 130, "assign_aws": 85, "rework": 40, "needs_info": 36, "defer": 78},
-  "by_priority": {"p0": 15, "p1": 80, "p2": 200, "p3": 169},
-  "action_plan_count": 45
+  "total_issues": 567,
+  "by_kind": {"bug_fix": 172, "small_change": 198, "needs_rfc": 187, "has_rfc": 1, "wont_do": 9},
+  "by_action": {"accept": 352, "reject": 11, "assign_aws": 6, "needs_info": 9, "defer": 189},
+  "by_priority": {"p0": 2, "p1": 65, "p2": 301, "p3": 199},
+  "action_plan_count": 227
 }
 ```
 
@@ -114,13 +116,15 @@ Counts by kind, action, and priority. Also includes distribution checks:
 
 Uses the same `--data-dir`, `--timeout` flags as `run`.
 
-## Cost
+## Cost and Timing
 
-| Pass | Model | Calls | Est. Cost |
-|------|-------|-------|-----------|
-| Classify | Sonnet | ~564 | ~$8-10 |
-| Action plan | Opus | 1 | ~$0.50 |
-| **Total** | | | **~$10** |
+Measured on Karpenter (567 open issues, April 2026):
+
+| Pass | Model | Calls | Time | Cost |
+|------|-------|-------|------|------|
+| Classify | Sonnet | 567 | 73s | $5.02 |
+| Action plan | Opus | 1 | 9 min | $1.39 |
+| **Total** | | | **~10 min** | **$6.41** |
 
 ## Validation
 
