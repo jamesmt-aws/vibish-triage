@@ -15,11 +15,12 @@ Return ONLY a JSON object with no other text.
   "repo": "org/repo",
   "kind": "bug_fix",
   "action": "accept",
-  "priority": "p1",
+  "severity": "medium",
   "effort": "small",
   "reasoning": "2-3 sentences explaining the decision.",
   "theme_ids": ["theme-id-from-evaluation"],
-  "rework_guidance": "",
+  "has_workaround": false,
+  "blocks_other_issues": false,
   "defer_reason": "",
   "question": "",
   "assignee_hint": ""
@@ -33,7 +34,7 @@ Return ONLY a JSON object with no other text.
 | `bug_fix` | Clear behavioral bug with reproduction path |
 | `small_change` | Obviously correct fix: docs, config, typo, one-line change |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
-| `has_obvious_rfc` | A link to an RFC, KEP, or design doc is visible in the issue body or comments |
+| `has_obvious_rfc` | A link to an RFC, KEP, or design doc is visible in the issue body or comments. Only use when a link or reference is visible. Do not infer from the nature of the request. |
 | `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
 
 ## Action
@@ -43,16 +44,17 @@ Return ONLY a JSON object with no other text.
 | `accept` | Do it. Bug fixes, small changes, implementations of accepted RFCs. |
 | `reject` | Close it. Wrong layer, wont_do, duplicate. |
 | `assign_aws` | Needs an AWS employee. Specify expertise in `assignee_hint`. |
-| `rework` | Send back with guidance in `rework_guidance`. |
 | `needs_info` | Ask a specific question in `question` field. |
 | `defer` | Not now. Reason in `defer_reason` (e.g., "defer until RFC"). |
 
-## Priority
+## Severity
 
-- **p0**: Safety violation, data loss, security.
-- **p1**: Cost or performance pain affecting many users.
-- **p2**: Real problem but workaround exists.
-- **p3**: Nice to have.
+Factual claim about the failure mode. Not a recommendation about what to
+work on.
+
+- **high**: Violates safety guarantees, causes data loss, cost explosion, or silent corruption.
+- **medium**: Degraded performance, suboptimal decisions, workaround exists.
+- **low**: Cosmetic, documentation, minor inconvenience.
 
 ## Effort
 
@@ -60,6 +62,14 @@ Return ONLY a JSON object with no other text.
 - **small**: A few hours of focused work.
 - **medium**: Multi-day, touches several files.
 - **large**: Multi-week, cross-cutting or design-heavy.
+
+## Signals
+
+Set `has_workaround` to true if the issue body or comments describe a
+workaround that users can apply today.
+
+Set `blocks_other_issues` to true if other issues reference this one as
+a blocker or prerequisite.
 
 ## Team Review Perspective
 

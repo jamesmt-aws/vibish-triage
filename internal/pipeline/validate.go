@@ -170,7 +170,7 @@ func validateEvaluate(dataDir string) error {
 func validatePlan(dataDir string) error {
 	validKinds := map[string]bool{"bug_fix": true, "small_change": true, "needs_rfc": true, "has_obvious_rfc": true, "wont_do": true}
 	validActions := map[string]bool{"accept": true, "reject": true, "assign_aws": true, "rework": true, "needs_info": true, "defer": true}
-	validPriorities := map[string]bool{"p0": true, "p1": true, "p2": true, "p3": true}
+	validSeverities := map[string]bool{"high": true, "medium": true, "low": true}
 	validEfforts := map[string]bool{"trivial": true, "small": true, "medium": true, "large": true}
 
 	// Structural: plan-events.jsonl
@@ -185,7 +185,7 @@ func validatePlan(dataDir string) error {
 
 	kindCounts := make(map[string]int)
 	actionCounts := make(map[string]int)
-	priorityCounts := make(map[string]int)
+	severityCounts := make(map[string]int)
 	eventNumbers := make(map[int]bool)
 
 	for i, raw := range eventLines {
@@ -196,7 +196,7 @@ func validatePlan(dataDir string) error {
 			Event    string `json:"event"`
 			Kind     string `json:"kind"`
 			Action   string `json:"action"`
-			Priority string `json:"priority"`
+			Severity string `json:"severity"`
 			Effort   string `json:"effort"`
 		}
 		if err := json.Unmarshal(raw, &ev); err != nil {
@@ -214,15 +214,15 @@ func validatePlan(dataDir string) error {
 		if !validActions[ev.Action] {
 			return fmt.Errorf("plan-events line %d: invalid action %q", i, ev.Action)
 		}
-		if !validPriorities[ev.Priority] {
-			return fmt.Errorf("plan-events line %d: invalid priority %q", i, ev.Priority)
+		if !validSeverities[ev.Severity] {
+			return fmt.Errorf("plan-events line %d: invalid severity %q", i, ev.Severity)
 		}
 		if !validEfforts[ev.Effort] {
 			return fmt.Errorf("plan-events line %d: invalid effort %q", i, ev.Effort)
 		}
 		kindCounts[ev.Kind]++
 		actionCounts[ev.Action]++
-		priorityCounts[ev.Priority]++
+		severityCounts[ev.Severity]++
 		eventNumbers[ev.Number] = true
 	}
 
@@ -249,9 +249,12 @@ func validatePlan(dataDir string) error {
 		}
 	}
 
-	// Structural: plan-summary.json
+	// Structural: plan-summary.json and proposal.md
 	if _, err := os.Stat(filepath.Join(dataDir, "plan-summary.json")); err != nil {
 		return fmt.Errorf("plan-summary.json missing: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "proposal.md")); err != nil {
+		slog.Warn("proposal.md missing (non-fatal)", "error", err)
 	}
 
 	// Distribution checks (warnings only).
@@ -261,10 +264,7 @@ func validatePlan(dataDir string) error {
 			slog.Warn("plan distribution: wont_do rate high", "wont_do", wontDo, "total", total,
 				"rate", fmt.Sprintf("%.1f%%", float64(wontDo)*100/float64(total)))
 		}
-		if p0 := priorityCounts["p0"]; float64(p0)/float64(total) >= 0.10 {
-			slog.Warn("plan distribution: p0 rate high", "p0", p0, "total", total,
-				"rate", fmt.Sprintf("%.1f%%", float64(p0)*100/float64(total)))
-		}
+		_ = severityCounts // used for summary, no distribution threshold on severity
 		if ni := actionCounts["needs_info"]; float64(ni)/float64(total) >= 0.15 {
 			slog.Warn("plan distribution: needs_info rate high", "needs_info", ni, "total", total,
 				"rate", fmt.Sprintf("%.1f%%", float64(ni)*100/float64(total)))

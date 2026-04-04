@@ -53,22 +53,30 @@ func (c *planCache) put(key string, data json.RawMessage) {
 	os.WriteFile(filepath.Join(c.dir, key+".json"), data, 0644)
 }
 
+// issueSignals are factual data extracted from the issue.
+type issueSignals struct {
+	AgeDays            int  `json:"age_days"`
+	CommentCount       int  `json:"comment_count"`
+	HasWorkaround      bool `json:"has_workaround"`
+	BlocksOtherIssues  bool `json:"blocks_other_issues"`
+}
+
 // planEvent is a classified event written to plan-events.jsonl.
 type planEvent struct {
-	Timestamp      string   `json:"ts"`
-	Repo           string   `json:"repo"`
-	Number         int      `json:"number"`
-	Event          string   `json:"event"`
-	Kind           string   `json:"kind"`
-	Action         string   `json:"action"`
-	Priority       string   `json:"priority"`
-	Reasoning      string   `json:"reasoning"`
-	ThemeIDs       []string `json:"theme_ids"`
-	Effort         string   `json:"effort"`
-	ReworkGuidance string   `json:"rework_guidance,omitempty"`
-	DeferReason    string   `json:"defer_reason,omitempty"`
-	Question       string   `json:"question,omitempty"`
-	AssigneeHint   string   `json:"assignee_hint,omitempty"`
+	Timestamp      string       `json:"ts"`
+	Repo           string       `json:"repo"`
+	Number         int          `json:"number"`
+	Event          string       `json:"event"`
+	Kind           string       `json:"kind"`
+	Action         string       `json:"action"`
+	Severity       string       `json:"severity"`
+	Reasoning      string       `json:"reasoning"`
+	ThemeIDs       []string     `json:"theme_ids"`
+	Effort         string       `json:"effort"`
+	Signals        issueSignals `json:"signals"`
+	DeferReason    string       `json:"defer_reason,omitempty"`
+	Question       string       `json:"question,omitempty"`
+	AssigneeHint   string       `json:"assignee_hint,omitempty"`
 }
 
 // planClassification is the raw Sonnet response for classification.
@@ -77,11 +85,12 @@ type planClassification struct {
 	Repo           string   `json:"repo"`
 	Kind           string   `json:"kind"`
 	Action         string   `json:"action"`
-	Priority       string   `json:"priority"`
+	Severity       string   `json:"severity"`
 	Effort         string   `json:"effort"`
 	Reasoning      string   `json:"reasoning"`
 	ThemeIDs       []string `json:"theme_ids"`
-	ReworkGuidance string   `json:"rework_guidance"`
+	HasWorkaround  bool     `json:"has_workaround"`
+	BlocksOtherIssues bool  `json:"blocks_other_issues"`
 	DeferReason    string   `json:"defer_reason"`
 	Question       string   `json:"question"`
 	AssigneeHint   string   `json:"assignee_hint"`
@@ -95,29 +104,37 @@ type actionBreakdown struct {
 	Summary           string `json:"summary"`
 }
 
+// signalsSummary aggregates signals across issues in an action.
+type signalsSummary struct {
+	MedianAgeDays    int     `json:"median_age_days"`
+	TotalComments    int     `json:"total_comments"`
+	PctNoWorkaround  float64 `json:"pct_no_workaround"`
+}
+
 // planAction is one action in the action plan.
 type planAction struct {
-	ActionID     string            `json:"action_id"`
-	Action       string            `json:"action"`
-	Priority     string            `json:"priority"`
-	Effort       string            `json:"effort"`
-	Issues       []int             `json:"issues"`
-	IssueCount   int               `json:"issue_count"`
-	Description  string            `json:"description"`
-	AssigneeHint string            `json:"assignee_hint,omitempty"`
-	DeferReason  string            `json:"defer_reason,omitempty"`
-	DependsOn    []string          `json:"depends_on"`
-	Breakdown    *actionBreakdown  `json:"breakdown,omitempty"`
+	ActionID       string            `json:"action_id"`
+	Action         string            `json:"action"`
+	Severity       string            `json:"severity"`
+	Effort         string            `json:"effort"`
+	Issues         []int             `json:"issues"`
+	IssueCount     int               `json:"issue_count"`
+	Description    string            `json:"description"`
+	SignalsSummary *signalsSummary   `json:"signals_summary,omitempty"`
+	AssigneeHint   string            `json:"assignee_hint,omitempty"`
+	DeferReason    string            `json:"defer_reason,omitempty"`
+	DependsOn      []string          `json:"depends_on"`
+	Breakdown      *actionBreakdown  `json:"breakdown,omitempty"`
 }
 
 // planSpread contains diagnostic metrics about action size distribution.
 type planSpread struct {
-	Gini            float64 `json:"gini"`
-	Top5Pct         float64 `json:"top_5_pct"`
-	Top10Pct        float64 `json:"top_10_pct"`
-	Top20Pct        float64 `json:"top_20_pct"`
-	MedianActionSize int    `json:"median_action_size"`
-	MaxActionSize    int    `json:"max_action_size"`
+	Gini             float64 `json:"gini"`
+	Top5Pct          float64 `json:"top_5_pct"`
+	Top10Pct         float64 `json:"top_10_pct"`
+	Top20Pct         float64 `json:"top_20_pct"`
+	MedianActionSize int     `json:"median_action_size"`
+	MaxActionSize    int     `json:"max_action_size"`
 }
 
 // planSummary is the summary stats written to plan-summary.json.
@@ -125,7 +142,7 @@ type planSummary struct {
 	TotalIssues     int            `json:"total_issues"`
 	ByKind          map[string]int `json:"by_kind"`
 	ByAction        map[string]int `json:"by_action"`
-	ByPriority      map[string]int `json:"by_priority"`
+	BySeverity      map[string]int `json:"by_severity"`
 	ActionPlanCount int            `json:"action_plan_count"`
 	EMIterations    int            `json:"em_iterations"`
 	OrphanedIssues  int            `json:"orphaned_issues"`
@@ -139,7 +156,7 @@ type actionAssignment struct {
 	Reasoning string   `json:"reasoning"`
 }
 
-// Plan runs the planning pipeline: classify, then EM-style action plan.
+// Plan runs the planning pipeline: classify, EM action plan, proposal.
 func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, timeout time.Duration, maxEMRounds int) error {
 	os.MkdirAll(dataDir, 0755)
 
@@ -178,6 +195,11 @@ func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, t
 		slog.Warn("breakdown failed, continuing without it", "error", err)
 	}
 
+	// Phase 3: Proposal.
+	if err := runProposal(ctx, opus, actions, dataDir); err != nil {
+		slog.Warn("proposal failed, continuing without it", "error", err)
+	}
+
 	// Write summary.
 	if err := writePlanSummary(dataDir, events, actions, iterations, orphaned); err != nil {
 		return fmt.Errorf("writing plan summary: %w", err)
@@ -208,7 +230,6 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 	}
 	cache := newPlanCache(dataDir)
 
-	// Check cache hits before starting.
 	results := make([]json.RawMessage, len(extractions))
 	var toClassify []int
 	var cacheHits int64
@@ -279,7 +300,6 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 				}
 				result := json.RawMessage(stripCodeFences(text))
 				results[idx] = result
-				// Cache the result.
 				k := cache.key(issues[idx], extractions[idx], evaluations[idx])
 				cache.put(k, result)
 				n := atomic.AddInt64(&completed, 1)
@@ -307,7 +327,7 @@ wrapResults:
 	var events []planEvent
 	var eventResults []json.RawMessage
 
-	for _, raw := range results {
+	for i, raw := range results {
 		if raw == nil {
 			eventResults = append(eventResults, json.RawMessage("{}"))
 			events = append(events, planEvent{})
@@ -324,22 +344,43 @@ wrapResults:
 		if effort == "" {
 			effort = "small"
 		}
+		severity := c.Severity
+		if severity == "" {
+			severity = "medium"
+		}
+
+		// Compute signals from raw issue data.
+		var issueData struct {
+			CreatedAt     string `json:"created_at"`
+			CommentsCount int    `json:"comments_count"`
+		}
+		json.Unmarshal(issues[i], &issueData)
+
+		ageDays := 0
+		if t, err := time.Parse(time.RFC3339, issueData.CreatedAt); err == nil {
+			ageDays = int(time.Since(t).Hours() / 24)
+		}
 
 		ev := planEvent{
-			Timestamp:      now,
-			Repo:           c.Repo,
-			Number:         c.Number,
-			Event:          "classified",
-			Kind:           c.Kind,
-			Action:         c.Action,
-			Priority:       c.Priority,
-			Reasoning:      c.Reasoning,
-			ThemeIDs:       c.ThemeIDs,
-			Effort:         effort,
-			ReworkGuidance: c.ReworkGuidance,
-			DeferReason:    c.DeferReason,
-			Question:       c.Question,
-			AssigneeHint:   c.AssigneeHint,
+			Timestamp:    now,
+			Repo:         c.Repo,
+			Number:       c.Number,
+			Event:        "classified",
+			Kind:         c.Kind,
+			Action:       c.Action,
+			Severity:     severity,
+			Reasoning:    c.Reasoning,
+			ThemeIDs:     c.ThemeIDs,
+			Effort:       effort,
+			Signals: issueSignals{
+				AgeDays:           ageDays,
+				CommentCount:      issueData.CommentsCount,
+				HasWorkaround:     c.HasWorkaround,
+				BlocksOtherIssues: c.BlocksOtherIssues,
+			},
+			DeferReason:  c.DeferReason,
+			Question:     c.Question,
+			AssigneeHint: c.AssigneeHint,
 		}
 		events = append(events, ev)
 
@@ -356,19 +397,16 @@ wrapResults:
 
 // runPlanEM runs the EM-style action plan: seed, then iterate assign+refine.
 func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []planEvent, dataDir string, maxRounds int) ([]planAction, int, int, error) {
-	// Load themes for seed.
 	themeLines, err := readJSONL(filepath.Join(dataDir, "fix-themes.jsonl"))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("reading fix-themes.jsonl: %w", err)
 	}
 
-	// Load extractions for E-step context.
 	extractions, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl"))
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("reading extracted.jsonl: %w", err)
 	}
 
-	// Build extraction lookup by issue number.
 	extractionByNumber := make(map[int]json.RawMessage)
 	for _, raw := range extractions {
 		var e struct{ Number int `json:"number"` }
@@ -377,29 +415,25 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		}
 	}
 
-	// Seed: group by theme + action type.
 	actions := seedActions(events, themeLines)
 	slog.Info("plan-em: seed", "actions", len(actions))
 
-	const stabilityThreshold = 0.05 // 5%
+	const stabilityThreshold = 0.05
 
 	var iterations int
 	var prevAssignments map[int][]string
-
 	var lastAssignments map[int][]string
 
 	for iter := range maxRounds {
 		iterations = iter + 1
 		slog.Info("plan-em: iteration", "round", iterations)
 
-		// E-step: assign issues to actions.
 		assignments, err := runPlanAssign(ctx, sonnet, events, actions, extractionByNumber)
 		if err != nil {
 			return nil, iterations, 0, fmt.Errorf("plan assign (round %d): %w", iterations, err)
 		}
 		lastAssignments = assignments
 
-		// Check convergence.
 		if prevAssignments != nil {
 			changed := countAssignmentChanges(prevAssignments, assignments)
 			rate := float64(changed) / float64(len(events))
@@ -412,7 +446,6 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		}
 		prevAssignments = assignments
 
-		// M-step: refine actions.
 		actions, err = runPlanRefine(ctx, opus, actions, assignments, events)
 		if err != nil {
 			return nil, iterations, 0, fmt.Errorf("plan refine (round %d): %w", iterations, err)
@@ -420,16 +453,11 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		slog.Info("plan-em: refined", "actions", len(actions))
 	}
 
-	// Always rebuild issue lists from the final assignments.
-	actions = assembleActions(actions, lastAssignments)
+	// Rebuild issue lists and compute signals summaries.
+	actions = assembleActions(actions, lastAssignments, events)
 
-	// Sort by priority then issue count descending.
-	priorityOrder := map[string]int{"p0": 0, "p1": 1, "p2": 2, "p3": 3}
+	// Sort by issue count descending.
 	sort.Slice(actions, func(i, j int) bool {
-		pi, pj := priorityOrder[actions[i].Priority], priorityOrder[actions[j].Priority]
-		if pi != pj {
-			return pi < pj
-		}
 		return actions[i].IssueCount > actions[j].IssueCount
 	})
 
@@ -447,7 +475,6 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 		}
 	}
 
-	// Write action-plan.jsonl.
 	var actionResults []json.RawMessage
 	for _, a := range actions {
 		b, _ := json.Marshal(a)
@@ -463,11 +490,9 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 
 // seedActions creates initial action drafts from themes + classifications.
 func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction {
-	// Parse themes.
 	type themeInfo struct {
 		ThemeID     string `json:"theme_id"`
 		Title       string `json:"title"`
-		Description string `json:"description"`
 	}
 	themes := make(map[string]themeInfo)
 	for _, raw := range themeLines {
@@ -477,7 +502,6 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 		}
 	}
 
-	// Group issues by theme + action type.
 	type groupKey struct {
 		themeID string
 		action  string
@@ -506,8 +530,7 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 			desc = key.themeID
 		}
 
-		// Use the most common priority and effort from the group.
-		priority := majorityVote(evs, func(e planEvent) string { return e.Priority })
+		severity := majorityVote(evs, func(e planEvent) string { return e.Severity })
 		effort := majorityVote(evs, func(e planEvent) string { return e.Effort })
 
 		issueNums := make([]int, len(evs))
@@ -518,7 +541,7 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 		actions = append(actions, planAction{
 			ActionID:    key.themeID + "--" + key.action,
 			Action:      key.action,
-			Priority:    priority,
+			Severity:    severity,
 			Effort:      effort,
 			Issues:      issueNums,
 			IssueCount:  len(issueNums),
@@ -527,13 +550,12 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 		})
 	}
 
-	// Group no-theme issues by action type.
 	noThemeGroups := make(map[string][]planEvent)
 	for _, ev := range noTheme {
 		noThemeGroups[ev.Action] = append(noThemeGroups[ev.Action], ev)
 	}
 	for action, evs := range noThemeGroups {
-		priority := majorityVote(evs, func(e planEvent) string { return e.Priority })
+		severity := majorityVote(evs, func(e planEvent) string { return e.Severity })
 		effort := majorityVote(evs, func(e planEvent) string { return e.Effort })
 		issueNums := make([]int, len(evs))
 		for i, e := range evs {
@@ -542,7 +564,7 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 		actions = append(actions, planAction{
 			ActionID:    "unthemed--" + action,
 			Action:      action,
-			Priority:    priority,
+			Severity:    severity,
 			Effort:      effort,
 			Issues:      issueNums,
 			IssueCount:  len(issueNums),
@@ -554,7 +576,6 @@ func seedActions(events []planEvent, themeLines []json.RawMessage) []planAction 
 	return actions
 }
 
-// majorityVote returns the most common value from events using the given key function.
 func majorityVote(events []planEvent, key func(planEvent) string) string {
 	counts := make(map[string]int)
 	for _, e := range events {
@@ -569,12 +590,11 @@ func majorityVote(events []planEvent, key func(planEvent) string) string {
 	return best
 }
 
-// buildCompactActionContext builds a compact action list for the E-step prompt.
 func buildCompactActionContext(actions []planAction) string {
 	var sb strings.Builder
 	sb.WriteString("Current actions:\n")
 	for _, a := range actions {
-		fmt.Fprintf(&sb, "- %s [%s, %s]: %s\n", a.ActionID, a.Action, a.Priority, a.Description)
+		fmt.Fprintf(&sb, "- %s [%s, %s]: %s\n", a.ActionID, a.Action, a.Severity, a.Description)
 	}
 	sb.WriteString("\n")
 	return sb.String()
@@ -593,7 +613,6 @@ func runPlanAssign(ctx context.Context, client inference.Client, events []planEv
 		"Most issues match 1 action. Some match 2. Some match 0.\n" +
 		"If no action fits, return an empty action_ids array."
 
-	// Only process events with valid numbers.
 	type workItem struct {
 		idx   int
 		event planEvent
@@ -619,10 +638,9 @@ func runPlanAssign(ctx context.Context, client inference.Client, events []planEv
 			defer wg.Done()
 			cwnd.acquire()
 
-			// Build user message: action context + classification + extraction.
 			var sb strings.Builder
 			sb.WriteString(actionContext)
-			sb.WriteString(fmt.Sprintf("Issue #%d: kind=%s action=%s priority=%s\n", ev.Number, ev.Kind, ev.Action, ev.Priority))
+			fmt.Fprintf(&sb, "Issue #%d: kind=%s action=%s severity=%s\n", ev.Number, ev.Kind, ev.Action, ev.Severity)
 			sb.WriteString("Reasoning: " + ev.Reasoning + "\n")
 			if ext, ok := extractionByNumber[ev.Number]; ok {
 				sb.WriteString("\nExtraction:\n")
@@ -660,7 +678,6 @@ func runPlanAssign(ctx context.Context, client inference.Client, events []planEv
 		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
 
-	// Parse assignments into map.
 	assignments := make(map[int][]string)
 	for _, raw := range results {
 		if raw == nil {
@@ -680,7 +697,6 @@ func runPlanAssign(ctx context.Context, client inference.Client, events []planEv
 
 // runPlanRefine runs the M-step: Opus refines action definitions.
 func runPlanRefine(ctx context.Context, client inference.Client, actions []planAction, assignments map[int][]string, events []planEvent) ([]planAction, error) {
-	// Rebuild issue lists from assignments.
 	actionIssues := make(map[string][]int)
 	for num, aids := range assignments {
 		for _, aid := range aids {
@@ -688,19 +704,18 @@ func runPlanRefine(ctx context.Context, client inference.Client, actions []planA
 		}
 	}
 
-	// Build action summaries for Opus.
+	eventByNumber := make(map[int]planEvent)
+	for _, ev := range events {
+		eventByNumber[ev.Number] = ev
+	}
+
 	var sb strings.Builder
 	sb.WriteString("Current actions with assignment counts:\n\n")
 	for _, a := range actions {
 		issues := actionIssues[a.ActionID]
 		fmt.Fprintf(&sb, "- %s [%s, %s, %s] %d issues: %s\n",
-			a.ActionID, a.Action, a.Priority, a.Effort, len(issues), a.Description)
+			a.ActionID, a.Action, a.Severity, a.Effort, len(issues), a.Description)
 
-		// Include 2-3 sample reasonings.
-		eventByNumber := make(map[int]planEvent)
-		for _, ev := range events {
-			eventByNumber[ev.Number] = ev
-		}
 		samples := 0
 		for _, num := range issues {
 			if ev, ok := eventByNumber[num]; ok && ev.Reasoning != "" && samples < 3 {
@@ -710,7 +725,6 @@ func runPlanRefine(ctx context.Context, client inference.Client, actions []planA
 		}
 	}
 
-	// Find orphaned issues.
 	assigned := make(map[int]bool)
 	for num := range assignments {
 		if len(assignments[num]) > 0 {
@@ -721,7 +735,7 @@ func runPlanRefine(ctx context.Context, client inference.Client, actions []planA
 	for _, ev := range events {
 		if ev.Number != 0 && !assigned[ev.Number] {
 			orphanSummaries = append(orphanSummaries, fmt.Sprintf(
-				"#%d [%s, %s, %s]: %s", ev.Number, ev.Kind, ev.Action, ev.Priority, ev.Reasoning))
+				"#%d [%s, %s, %s]: %s", ev.Number, ev.Kind, ev.Action, ev.Severity, ev.Reasoning))
 		}
 	}
 	if len(orphanSummaries) > 0 {
@@ -742,13 +756,14 @@ Rules:
 - Split actions that are too broad (diverse issue types in one bucket).
 - Create new actions for orphaned issues that form a pattern.
 - Drop empty actions (0 assigned issues).
-- Adjust descriptions, priorities, effort estimates based on the samples.
+- Adjust descriptions, severity, effort estimates based on the samples.
 - Keep action_ids in kebab-case.
 
 Return ONLY a JSONL block wrapped in ` + "```jsonl ... ```" + `. One action per line:
 
-{"action_id": "kebab-id", "action": "accept", "priority": "p1", "effort": "medium", "description": "What to do.", "depends_on": []}
+{"action_id": "kebab-id", "action": "accept", "severity": "high", "effort": "medium", "description": "What to do.", "depends_on": []}
 
+Valid severities: high, medium, low.
 Do not include issue lists — those are rebuilt from the next assignment round.`
 
 	user := sb.String() + "\nRefine the action plan. Return as JSONL."
@@ -762,7 +777,6 @@ Do not include issue lists — those are rebuilt from the next assignment round.
 		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens,
 		"cost", fmt.Sprintf("$%.4f", usage.Cost()))
 
-	// Parse refined actions.
 	refined := stripCodeFences(extractFencedBlock(text, "jsonl"))
 	if refined == "" {
 		refined = stripCodeFences(text)
@@ -788,12 +802,19 @@ Do not include issue lists — those are rebuilt from the next assignment round.
 	return newActions, nil
 }
 
-// assembleActions rebuilds issue lists on actions from the final assignments.
-func assembleActions(actions []planAction, assignments map[int][]string) []planAction {
+// assembleActions rebuilds issue lists and computes signal summaries.
+func assembleActions(actions []planAction, assignments map[int][]string, events []planEvent) []planAction {
 	actionIssues := make(map[string][]int)
 	for num, aids := range assignments {
 		for _, aid := range aids {
 			actionIssues[aid] = append(actionIssues[aid], num)
+		}
+	}
+
+	eventByNumber := make(map[int]planEvent)
+	for _, ev := range events {
+		if ev.Number != 0 {
+			eventByNumber[ev.Number] = ev
 		}
 	}
 
@@ -805,15 +826,39 @@ func assembleActions(actions []planAction, assignments map[int][]string) []planA
 		}
 		a.Issues = issues
 		a.IssueCount = len(issues)
+		a.SignalsSummary = computeSignalsSummary(issues, eventByNumber)
 		result = append(result, a)
 	}
 	return result
 }
 
-// countAssignmentChanges counts issues whose action assignments changed between rounds.
+func computeSignalsSummary(issues []int, eventByNumber map[int]planEvent) *signalsSummary {
+	if len(issues) == 0 {
+		return nil
+	}
+	var ages []int
+	totalComments := 0
+	noWorkaround := 0
+	for _, num := range issues {
+		ev := eventByNumber[num]
+		ages = append(ages, ev.Signals.AgeDays)
+		totalComments += ev.Signals.CommentCount
+		if !ev.Signals.HasWorkaround {
+			noWorkaround++
+		}
+	}
+	sort.Ints(ages)
+	median := ages[len(ages)/2]
+
+	return &signalsSummary{
+		MedianAgeDays:   median,
+		TotalComments:   totalComments,
+		PctNoWorkaround: math.Round(float64(noWorkaround)*1000/float64(len(issues))) / 10,
+	}
+}
+
 func countAssignmentChanges(prev, curr map[int][]string) int {
 	changed := 0
-	// Check all issues in both maps.
 	allIssues := make(map[int]bool)
 	for n := range prev {
 		allIssues[n] = true
@@ -831,11 +876,8 @@ func countAssignmentChanges(prev, curr map[int][]string) int {
 	return changed
 }
 
-// writePlanSummary computes and writes plan-summary.json.
-// runBreakdown sends the top 10 actions (by issue count) to Haiku for a
-// diagnostic breakdown: how many distinct updates, how many obviously correct.
+// runBreakdown sends the top 10 actions (by issue count) to Haiku.
 func runBreakdown(ctx context.Context, client inference.Client, actions []planAction, dataDir string) error {
-	// Load extractions for context.
 	extractions, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl"))
 	if err != nil {
 		return err
@@ -848,7 +890,6 @@ func runBreakdown(ctx context.Context, client inference.Client, actions []planAc
 		}
 	}
 
-	// Sort by issue count, take top 10.
 	sorted := make([]int, len(actions))
 	for i := range sorted {
 		sorted[i] = i
@@ -882,8 +923,8 @@ Return ONLY a JSON object:
 		for _, num := range a.Issues {
 			if ext, ok := extractionByNumber[num]; ok {
 				var e struct {
-					Number int    `json:"number"`
-					Title  string `json:"title"`
+					Number        int    `json:"number"`
+					Title         string `json:"title"`
 					WhatWentWrong string `json:"what_went_wrong"`
 				}
 				if json.Unmarshal(ext, &e) == nil {
@@ -901,15 +942,13 @@ Return ONLY a JSON object:
 		_ = usage
 
 		var bd actionBreakdown
-		cleaned := stripCodeFences(text)
-		if json.Unmarshal([]byte(cleaned), &bd) == nil {
+		if json.Unmarshal([]byte(stripCodeFences(text)), &bd) == nil {
 			a.Breakdown = &bd
 			slog.Info("breakdown", "action", a.ActionID, "distinct", bd.DistinctUpdates,
 				"obvious", bd.ObviouslyCorrect, "discuss", bd.NeedsDiscussion)
 		}
 	}
 
-	// Rewrite action-plan.jsonl with breakdowns.
 	var results []json.RawMessage
 	for _, a := range actions {
 		b, _ := json.Marshal(a)
@@ -918,12 +957,68 @@ Return ONLY a JSON object:
 	return writeResults(filepath.Join(dataDir, "action-plan.jsonl"), results)
 }
 
+// runProposal produces a constrained proposal from the action plan.
+func runProposal(ctx context.Context, client inference.Client, actions []planAction, dataDir string) error {
+	slog.Info("proposal: starting")
+
+	// Build compact action summaries for Opus.
+	var sb strings.Builder
+	sb.WriteString("Action plan (sorted by issue count):\n\n")
+	for _, a := range actions {
+		fmt.Fprintf(&sb, "- %s [%s, severity=%s, effort=%s] %d issues: %s\n",
+			a.ActionID, a.Action, a.Severity, a.Effort, a.IssueCount, a.Description)
+		if a.SignalsSummary != nil {
+			fmt.Fprintf(&sb, "  signals: median_age=%dd, comments=%d, %.0f%% no workaround\n",
+				a.SignalsSummary.MedianAgeDays, a.SignalsSummary.TotalComments, a.SignalsSummary.PctNoWorkaround)
+		}
+		if a.Breakdown != nil {
+			fmt.Fprintf(&sb, "  breakdown: %d distinct, %d obvious, %d discuss\n",
+				a.Breakdown.DistinctUpdates, a.Breakdown.ObviouslyCorrect, a.Breakdown.NeedsDiscussion)
+		}
+	}
+
+	system := `You produce a constrained proposal from an action plan.
+
+Write three sections in markdown:
+
+## ~10 obvious things to do
+Actions where severity, signals, and classification all agree. No judgment
+call needed — the data speaks. Include the action_id, issue count, and a
+one-sentence reason.
+
+## ~5 you would regret not doing
+A subset (or beyond) the obvious list where inaction compounds: safety
+violations without workarounds, bugs that erode user trust, gaps that
+block downstream work. Explain what gets worse if you wait.
+
+## Top 3 and why
+The three actions the team should start with. The scarcity is the point.
+For each, explain: why this over the others? What does this unblock?
+What is the cost of not doing it this quarter?
+
+Be direct. Use the signals (age, comments, workaround availability) as
+evidence, not decoration. This proposal is a conversation starter for
+someone who influences a team but does not control it.`
+
+	text, usage, err := inference.Converse(ctx, client, system, sb.String(),
+		inference.WithMaxTokens(4096))
+	if err != nil {
+		return fmt.Errorf("proposal call failed: %w", err)
+	}
+	slog.Info("proposal: done",
+		"input_tokens", usage.InputTokens, "output_tokens", usage.OutputTokens,
+		"cost", fmt.Sprintf("$%.4f", usage.Cost()))
+
+	return os.WriteFile(filepath.Join(dataDir, "proposal.md"), []byte(text), 0644)
+}
+
+// writePlanSummary computes and writes plan-summary.json.
 func writePlanSummary(dataDir string, events []planEvent, actions []planAction, iterations, orphaned int) error {
 	summary := planSummary{
 		TotalIssues:     len(events),
 		ByKind:          make(map[string]int),
 		ByAction:        make(map[string]int),
-		ByPriority:      make(map[string]int),
+		BySeverity:      make(map[string]int),
 		ActionPlanCount: len(actions),
 		EMIterations:    iterations,
 		OrphanedIssues:  orphaned,
@@ -937,8 +1032,8 @@ func writePlanSummary(dataDir string, events []planEvent, actions []planAction, 
 		if ev.Action != "" {
 			summary.ByAction[ev.Action]++
 		}
-		if ev.Priority != "" {
-			summary.ByPriority[ev.Priority]++
+		if ev.Severity != "" {
+			summary.BySeverity[ev.Severity]++
 		}
 	}
 
@@ -949,13 +1044,11 @@ func writePlanSummary(dataDir string, events []planEvent, actions []planAction, 
 	return os.WriteFile(filepath.Join(dataDir, "plan-summary.json"), data, 0644)
 }
 
-// computeSpread calculates Gini coefficient and top-N coverage for action sizes.
 func computeSpread(actions []planAction) planSpread {
 	if len(actions) == 0 {
 		return planSpread{}
 	}
 
-	// Collect sizes sorted ascending for Gini.
 	sizes := make([]int, len(actions))
 	total := 0
 	maxSize := 0
@@ -968,8 +1061,6 @@ func computeSpread(actions []planAction) planSpread {
 	}
 	sort.Ints(sizes)
 
-	// Gini coefficient: sum of |xi - xj| for all pairs / (2 * n * sum).
-	// Equivalent: G = (2 * sum(i * xi) / (n * sum)) - (n+1)/n
 	n := len(sizes)
 	var weightedSum float64
 	for i, s := range sizes {
@@ -980,7 +1071,6 @@ func computeSpread(actions []planAction) planSpread {
 		gini = 0
 	}
 
-	// Top-N coverage: sort descending, count unique issues in top N.
 	sort.Sort(sort.Reverse(sort.IntSlice(sizes)))
 	topNPct := func(topN int) float64 {
 		if topN > len(sizes) {
@@ -996,7 +1086,6 @@ func computeSpread(actions []planAction) planSpread {
 		return float64(covered) * 100 / float64(total)
 	}
 
-	// Median.
 	median := sizes[n/2]
 	if n%2 == 0 && n > 1 {
 		median = (sizes[n/2-1] + sizes[n/2]) / 2
