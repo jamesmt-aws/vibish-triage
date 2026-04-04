@@ -87,18 +87,27 @@ type planClassification struct {
 	AssigneeHint   string   `json:"assignee_hint"`
 }
 
+// actionBreakdown is the Haiku-generated diagnostic for large actions.
+type actionBreakdown struct {
+	DistinctUpdates   int    `json:"distinct_updates"`
+	ObviouslyCorrect  int    `json:"obviously_correct"`
+	NeedsDiscussion   int    `json:"needs_discussion"`
+	Summary           string `json:"summary"`
+}
+
 // planAction is one action in the action plan.
 type planAction struct {
-	ActionID     string   `json:"action_id"`
-	Action       string   `json:"action"`
-	Priority     string   `json:"priority"`
-	Effort       string   `json:"effort"`
-	Issues       []int    `json:"issues"`
-	IssueCount   int      `json:"issue_count"`
-	Description  string   `json:"description"`
-	AssigneeHint string   `json:"assignee_hint,omitempty"`
-	DeferReason  string   `json:"defer_reason,omitempty"`
-	DependsOn    []string `json:"depends_on"`
+	ActionID     string            `json:"action_id"`
+	Action       string            `json:"action"`
+	Priority     string            `json:"priority"`
+	Effort       string            `json:"effort"`
+	Issues       []int             `json:"issues"`
+	IssueCount   int               `json:"issue_count"`
+	Description  string            `json:"description"`
+	AssigneeHint string            `json:"assignee_hint,omitempty"`
+	DeferReason  string            `json:"defer_reason,omitempty"`
+	DependsOn    []string          `json:"depends_on"`
+	Breakdown    *actionBreakdown  `json:"breakdown,omitempty"`
 }
 
 // planSpread contains diagnostic metrics about action size distribution.
@@ -158,6 +167,15 @@ func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, t
 	cancel()
 	if err != nil {
 		return fmt.Errorf("plan EM failed: %w", err)
+	}
+
+	// Post-hoc: breakdown of top 10 actions.
+	haiku, err := bedrock.NewClient(ctx, "claude-haiku")
+	if err != nil {
+		return fmt.Errorf("creating haiku client: %w", err)
+	}
+	if err := runBreakdown(ctx, haiku, actions, dataDir); err != nil {
+		slog.Warn("breakdown failed, continuing without it", "error", err)
 	}
 
 	// Write summary.
@@ -814,6 +832,92 @@ func countAssignmentChanges(prev, curr map[int][]string) int {
 }
 
 // writePlanSummary computes and writes plan-summary.json.
+// runBreakdown sends the top 10 actions (by issue count) to Haiku for a
+// diagnostic breakdown: how many distinct updates, how many obviously correct.
+func runBreakdown(ctx context.Context, client inference.Client, actions []planAction, dataDir string) error {
+	// Load extractions for context.
+	extractions, err := readJSONL(filepath.Join(dataDir, "extracted.jsonl"))
+	if err != nil {
+		return err
+	}
+	extractionByNumber := make(map[int]json.RawMessage)
+	for _, raw := range extractions {
+		var e struct{ Number int `json:"number"` }
+		if json.Unmarshal(raw, &e) == nil && e.Number != 0 {
+			extractionByNumber[e.Number] = raw
+		}
+	}
+
+	// Sort by issue count, take top 10.
+	sorted := make([]int, len(actions))
+	for i := range sorted {
+		sorted[i] = i
+	}
+	sort.Slice(sorted, func(a, b int) bool {
+		return actions[sorted[a]].IssueCount > actions[sorted[b]].IssueCount
+	})
+	top := 10
+	if top > len(sorted) {
+		top = len(sorted)
+	}
+
+	system := `You break down a large action item into its component parts.
+
+You will receive an action description and a list of issues assigned to it.
+Answer two questions:
+1. How many distinct pieces of work are in this action?
+2. How many issues are obviously correct fixes (docs typos, broken links,
+   one-line config changes) that someone could merge without debate?
+
+Return ONLY a JSON object:
+{"distinct_updates": 6, "obviously_correct": 42, "needs_discussion": 27, "summary": "Brief breakdown: 3 broken-link batches (trivial), 2 missing guides (medium), 1 policy decision (needs input)"}`
+
+	slog.Info("breakdown: starting", "actions", top)
+
+	for _, idx := range sorted[:top] {
+		a := &actions[idx]
+
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "Action: %s\nDescription: %s\n%d issues:\n\n", a.ActionID, a.Description, a.IssueCount)
+		for _, num := range a.Issues {
+			if ext, ok := extractionByNumber[num]; ok {
+				var e struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					WhatWentWrong string `json:"what_went_wrong"`
+				}
+				if json.Unmarshal(ext, &e) == nil {
+					fmt.Fprintf(&sb, "#%d: %s — %s\n", e.Number, e.Title, e.WhatWentWrong)
+				}
+			}
+		}
+
+		text, usage, err := inference.Converse(ctx, client, system, sb.String(),
+			inference.WithMaxTokens(1024))
+		if err != nil {
+			slog.Warn("breakdown: call failed", "action", a.ActionID, "error", err)
+			continue
+		}
+		_ = usage
+
+		var bd actionBreakdown
+		cleaned := stripCodeFences(text)
+		if json.Unmarshal([]byte(cleaned), &bd) == nil {
+			a.Breakdown = &bd
+			slog.Info("breakdown", "action", a.ActionID, "distinct", bd.DistinctUpdates,
+				"obvious", bd.ObviouslyCorrect, "discuss", bd.NeedsDiscussion)
+		}
+	}
+
+	// Rewrite action-plan.jsonl with breakdowns.
+	var results []json.RawMessage
+	for _, a := range actions {
+		b, _ := json.Marshal(a)
+		results = append(results, b)
+	}
+	return writeResults(filepath.Join(dataDir, "action-plan.jsonl"), results)
+}
+
 func writePlanSummary(dataDir string, events []planEvent, actions []planAction, iterations, orphaned int) error {
 	summary := planSummary{
 		TotalIssues:     len(events),

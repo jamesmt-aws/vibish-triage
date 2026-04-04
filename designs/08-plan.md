@@ -123,10 +123,27 @@ Default: 2 rounds (`--max-em-rounds`). Stop early if assignment is
 stable (< 5% of issues change action between rounds). A third round
 buys ~2% more stability at ~$15 extra cost; usually not worth it.
 
+#### Post-hoc: Breakdown (Haiku, top 10 actions)
+
+After the EM loop, send each of the top 10 actions (by issue count) to
+Haiku with the action description and its issues' titles + extractions.
+Ask: how many distinct pieces of work are in this action, and how many
+are obviously correct fixes (`small_change`) that someone could merge
+without debate?
+
+This is diagnostic. The breakdown is appended to the action in
+action-plan.jsonl as a `breakdown` field:
+
+```json
+{"distinct_updates": 6, "obviously_correct": 42, "needs_discussion": 27, "summary": "3 broken-link batches (trivial), 2 missing guides (medium writing), 1 policy decision (needs team input)"}
+```
+
+Cost: ~10 Haiku calls, negligible.
+
 ### Summary
 
-After convergence, compute and write plan-summary.json from the final
-classifications and action assignments.
+After convergence and breakdown, compute and write plan-summary.json
+from the final classifications and action assignments.
 
 ## Output
 
