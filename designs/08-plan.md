@@ -1,7 +1,8 @@
 # Plan
 
-Classify every open issue and produce a work plan. Two passes: parallel
-Sonnet classifies each issue, then one Opus call consolidates into actions.
+Classify every open issue and produce a work plan. Three phases: classify
+issues, then iteratively assign them to actions and refine the actions
+(EM-style).
 
 Issues only. PR planning deferred.
 
@@ -24,7 +25,7 @@ Mr. Gold) is embedded in the classification system prompt. No real names.
 
 ## Behavior
 
-### Pass 1: Classify (Sonnet, parallel)
+### Phase 1: Classify (Sonnet, parallel)
 
 For each issue, send: the raw issue JSON (body, comments, links), the
 extraction, and the evaluation verdict. The raw issue is included because
@@ -43,7 +44,7 @@ Each call returns a classification.
 | `bug_fix` | Clear behavioral bug with reproduction path |
 | `small_change` | Minor fix, docs, config |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
-| `has_rfc` | Issue references or is an RFC |
+| `has_rfc` | Issue links to, references, or is an RFC/KEP/design doc |
 | `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
 
 **action** -- what happens next:
@@ -64,15 +65,56 @@ p2 (real but workaround exists), p3 (nice to have).
 
 **effort**: trivial, small, medium, large.
 
-### Pass 2: Action Plan (Opus, single call)
+### Phase 2: Action Plan (EM-style iteration)
 
-Reads all classifications plus fix-themes.jsonl for theme context. Does
-not re-derive clusters. Produces one action per line, each covering 1:N
-issues.
+Three sub-steps that iterate until stable.
 
-Merge rules: issues sharing a theme become one action when the fix is
-the same work. Split when fixes are distinct even if the theme is shared.
-Reject and defer actions can batch multiple issues.
+#### Seed
+
+Code assembles draft actions from themes + classifications. For each
+theme in fix-themes.jsonl, group classified issues by action type
+(accept, defer, reject, etc). Each group becomes a draft action:
+
+```json
+{"action_id": "cost-benefit-consolidation--accept", "action": "accept", "priority": "p1", "effort": "medium", "description": "Evaluate whether each consolidation move is worth executing", "issues": [1234, 1235], "issue_count": 2}
+```
+
+The seed is deterministic code, no LLM call. It produces the initial
+action drafts that the EM loop refines.
+
+#### E-step: Assign (Sonnet, parallel)
+
+For each classified issue, send: the classification, the extraction, and
+a compact list of current action drafts (IDs + descriptions only). The
+model assigns the issue to 0-2 actions.
+
+Same pattern as `runAssignIssues` in the aggregate step. Same cwnd
+controller. Issues not assigned to any action are flagged as orphaned.
+
+#### M-step: Refine (Opus, single call)
+
+Opus receives: all action drafts with their assigned issue counts, sample
+reasonings (2-3 per action), and orphaned issue summaries. Input is
+compact -- action summaries, not all issues.
+
+Opus refines the action list:
+- Merge actions that cover the same work (even across themes)
+- Split actions that are too broad (diverse issue types in one bucket)
+- Create new actions for orphaned issues that form a pattern
+- Adjust descriptions, priorities, effort estimates
+- Drop empty actions (no assignments)
+
+Output: refined action drafts as JSONL.
+
+#### Convergence
+
+Iterate E-step + M-step up to 3 rounds. Stop early if assignment is
+stable (< 5% of issues change action between rounds).
+
+### Summary
+
+After convergence, compute and write plan-summary.json from the final
+classifications and action assignments.
 
 ## Output
 
@@ -84,7 +126,7 @@ events only. Other event types (`action_updated`, `timeout`) are reserved
 for future use and not produced by this step.
 
 ```json
-{"ts": "2026-04-03T14:30:00Z", "repo": "org/repo", "number": 1234, "event": "classified", "kind": "bug_fix", "action": "assign_aws", "priority": "p1", "reasoning": "...", "theme_ids": ["cost-benefit-consolidation"], "effort": "small", "assignee_hint": "scheduling"}
+{"ts": "2026-04-04T14:30:00Z", "repo": "org/repo", "number": 1234, "event": "classified", "kind": "bug_fix", "action": "assign_aws", "priority": "p1", "reasoning": "...", "theme_ids": ["cost-benefit-consolidation"], "effort": "small", "assignee_hint": "scheduling"}
 ```
 
 ### `data/action-plan.jsonl`
@@ -92,12 +134,12 @@ for future use and not produced by this step.
 One action per line, sorted by priority then issue count descending.
 
 ```json
-{"action_id": "consolidation-cost-benefit", "action": "assign_aws", "assignee_hint": "disruption/scheduling", "effort": "large", "priority": "p0", "issues": [1234, 1235, 1240], "issue_count": 3, "description": "Implement pre-execution cost-benefit check in consolidation path.", "depends_on": []}
+{"action_id": "cost-benefit-consolidation--accept", "action": "assign_aws", "assignee_hint": "disruption/scheduling", "effort": "large", "priority": "p0", "issues": [1234, 1235, 1240], "issue_count": 3, "description": "Implement pre-execution cost-benefit check in consolidation path.", "depends_on": []}
 ```
 
 ### `data/plan-summary.json`
 
-Counts by kind, action, and priority. Also includes distribution checks:
+Counts by kind, action, priority, plus EM iteration stats.
 
 ```json
 {
@@ -105,7 +147,9 @@ Counts by kind, action, and priority. Also includes distribution checks:
   "by_kind": {"bug_fix": 172, "small_change": 198, "needs_rfc": 187, "has_rfc": 1, "wont_do": 9},
   "by_action": {"accept": 352, "reject": 11, "assign_aws": 6, "needs_info": 9, "defer": 189},
   "by_priority": {"p0": 2, "p1": 65, "p2": 301, "p3": 199},
-  "action_plan_count": 227
+  "action_plan_count": 85,
+  "em_iterations": 2,
+  "orphaned_issues": 12
 }
 ```
 
@@ -119,13 +163,18 @@ Uses the same `--data-dir`, `--timeout` flags as `run`.
 
 ## Cost and Timing
 
-Measured on Karpenter (567 open issues, April 2026):
+Estimated for Karpenter (567 open issues):
 
-| Pass | Model | Calls | Time | Cost |
-|------|-------|-------|------|------|
-| Classify | Sonnet | 567 | ~90s | ~$8 |
-| Action plan | Opus | 1 | 9 min | $1.39 |
-| **Total** | | | **~10 min** | **~$9** |
+| Phase | Model | Calls | Est. Cost |
+|-------|-------|-------|-----------|
+| Classify | Sonnet | 567 | ~$8 |
+| Seed | code | 0 | $0 |
+| Assign (per round) | Sonnet | 567 | ~$4 |
+| Refine (per round) | Opus | 1 | ~$0.50 |
+| **Total (2 rounds)** | | | **~$17** |
+
+More expensive than the single-Opus approach but avoids token limits and
+produces better action boundaries.
 
 ## Validation
 
@@ -142,7 +191,8 @@ Measured on Karpenter (567 open issues, April 2026):
 - No real reviewer names in any output.
 
 ### Distribution
-- `wont_do` is less than 40% of issues. A higher rate suggests the model is rejecting too aggressively.
-- `p0` is less than 10% of issues. Safety violations should be rare.
-- `needs_info` is less than 15% of issues. The pipeline already has extractions and evaluations -- most issues should be classifiable.
-- Every kind has at least 1 issue. A missing kind suggests the model collapsed categories.
+- `wont_do` is less than 40% of issues.
+- `p0` is less than 10% of issues.
+- `needs_info` is less than 15% of issues.
+- Every kind has at least 1 issue.
+- Orphaned issues (not in any action) less than 10%.
