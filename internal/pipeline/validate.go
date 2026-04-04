@@ -166,6 +166,115 @@ func validateEvaluate(dataDir string) error {
 	return nil
 }
 
+// validatePlan checks plan-events.jsonl, action-plan.jsonl, and plan-summary.json per 08-plan.md.
+func validatePlan(dataDir string) error {
+	validKinds := map[string]bool{"bug_fix": true, "small_change": true, "needs_rfc": true, "has_rfc": true, "wont_do": true}
+	validActions := map[string]bool{"accept": true, "reject": true, "assign_aws": true, "rework": true, "needs_info": true, "defer": true}
+	validPriorities := map[string]bool{"p0": true, "p1": true, "p2": true, "p3": true}
+
+	// Structural: plan-events.jsonl
+	issueCount := countLines(filepath.Join(dataDir, "issues.jsonl"))
+	eventLines, err := readJSONL(filepath.Join(dataDir, "plan-events.jsonl"))
+	if err != nil {
+		return fmt.Errorf("reading plan-events.jsonl: %w", err)
+	}
+	if len(eventLines) != issueCount {
+		return fmt.Errorf("plan-events.jsonl has %d lines, issues.jsonl has %d", len(eventLines), issueCount)
+	}
+
+	kindCounts := make(map[string]int)
+	actionCounts := make(map[string]int)
+	priorityCounts := make(map[string]int)
+	eventNumbers := make(map[int]bool)
+
+	for i, raw := range eventLines {
+		var ev struct {
+			Ts       string `json:"ts"`
+			Repo     string `json:"repo"`
+			Number   int    `json:"number"`
+			Event    string `json:"event"`
+			Kind     string `json:"kind"`
+			Action   string `json:"action"`
+			Priority string `json:"priority"`
+		}
+		if err := json.Unmarshal(raw, &ev); err != nil {
+			return fmt.Errorf("plan-events line %d: invalid JSON: %w", i, err)
+		}
+		if ev.Number == 0 {
+			continue // empty result from failed call
+		}
+		if ev.Ts == "" || ev.Repo == "" || ev.Event == "" {
+			return fmt.Errorf("plan-events line %d: missing required field (ts=%q repo=%q event=%q)", i, ev.Ts, ev.Repo, ev.Event)
+		}
+		if !validKinds[ev.Kind] {
+			return fmt.Errorf("plan-events line %d: invalid kind %q", i, ev.Kind)
+		}
+		if !validActions[ev.Action] {
+			return fmt.Errorf("plan-events line %d: invalid action %q", i, ev.Action)
+		}
+		if !validPriorities[ev.Priority] {
+			return fmt.Errorf("plan-events line %d: invalid priority %q", i, ev.Priority)
+		}
+		kindCounts[ev.Kind]++
+		actionCounts[ev.Action]++
+		priorityCounts[ev.Priority]++
+		eventNumbers[ev.Number] = true
+	}
+
+	// Structural: action-plan.jsonl
+	actionLines, err := readJSONL(filepath.Join(dataDir, "action-plan.jsonl"))
+	if err != nil {
+		return fmt.Errorf("reading action-plan.jsonl: %w", err)
+	}
+	if len(actionLines) < 10 {
+		return fmt.Errorf("action-plan.jsonl has %d actions, expected at least 10", len(actionLines))
+	}
+	for i, raw := range actionLines {
+		var a struct {
+			ActionID string `json:"action_id"`
+			Issues   []int  `json:"issues"`
+		}
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return fmt.Errorf("action-plan line %d: invalid JSON: %w", i, err)
+		}
+		for _, num := range a.Issues {
+			if !eventNumbers[num] {
+				return fmt.Errorf("action-plan line %d: issue %d not in plan-events.jsonl", i, num)
+			}
+		}
+	}
+
+	// Structural: plan-summary.json
+	if _, err := os.Stat(filepath.Join(dataDir, "plan-summary.json")); err != nil {
+		return fmt.Errorf("plan-summary.json missing: %w", err)
+	}
+
+	// Distribution checks (warnings only).
+	total := len(eventNumbers)
+	if total > 0 {
+		if wontDo := kindCounts["wont_do"]; float64(wontDo)/float64(total) >= 0.40 {
+			slog.Warn("plan distribution: wont_do rate high", "wont_do", wontDo, "total", total,
+				"rate", fmt.Sprintf("%.1f%%", float64(wontDo)*100/float64(total)))
+		}
+		if p0 := priorityCounts["p0"]; float64(p0)/float64(total) >= 0.10 {
+			slog.Warn("plan distribution: p0 rate high", "p0", p0, "total", total,
+				"rate", fmt.Sprintf("%.1f%%", float64(p0)*100/float64(total)))
+		}
+		if ni := actionCounts["needs_info"]; float64(ni)/float64(total) >= 0.15 {
+			slog.Warn("plan distribution: needs_info rate high", "needs_info", ni, "total", total,
+				"rate", fmt.Sprintf("%.1f%%", float64(ni)*100/float64(total)))
+		}
+		for _, k := range []string{"bug_fix", "small_change", "needs_rfc", "has_rfc", "wont_do"} {
+			if kindCounts[k] == 0 {
+				slog.Warn("plan distribution: missing kind", "kind", k)
+			}
+		}
+	}
+
+	slog.Info("validate: plan OK", "events", len(eventLines), "actions", len(actionLines))
+	return nil
+}
+
 // writeEvalSummary computes and writes evaluation-summary.json per 05-evaluate.md.
 func writeEvalSummary(dataDir string) error {
 	stats := computeEvalStats(filepath.Join(dataDir, "evaluated.jsonl"))
