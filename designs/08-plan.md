@@ -151,18 +151,36 @@ One action per line, sorted by priority then issue count descending.
 
 ### `data/plan-summary.json`
 
-Counts by kind, action, priority, plus EM iteration stats.
+Counts by kind, action, priority, EM iteration stats, and spread metrics.
 
 ```json
 {
   "total_issues": 567,
-  "by_kind": {"bug_fix": 135, "small_change": 202, "needs_rfc": 210, "has_obvious_rfc": 6, "wont_do": 14},
-  "by_action": {"accept": 278, "reject": 26, "assign_aws": 4, "needs_info": 29, "defer": 226},
-  "by_priority": {"p0": 1, "p1": 42, "p2": 260, "p3": 264},
-  "action_plan_count": 106,
+  "by_kind": {"bug_fix": 147, "small_change": 180, "needs_rfc": 217, "has_obvious_rfc": 9, "wont_do": 13},
+  "by_action": {"accept": 281, "reject": 25, "assign_aws": 3, "needs_info": 27, "defer": 229},
+  "by_priority": {"p0": 1, "p1": 43, "p2": 261, "p3": 261},
+  "action_plan_count": 89,
   "em_iterations": 2,
-  "orphaned_issues": 0
+  "orphaned_issues": 7,
+  "spread": {
+    "gini": 0.52,
+    "top_5_pct": 34.2,
+    "top_10_pct": 51.8,
+    "top_20_pct": 72.1,
+    "median_action_size": 3,
+    "max_action_size": 70
+  }
 }
+```
+
+Spread metrics are diagnostic -- they tell you whether a few actions
+dominate the backlog or work is evenly distributed. A high Gini (> 0.6)
+means a small number of actions cover most issues; a low Gini (< 0.3)
+means actions are roughly equal size. Neither is inherently good or bad.
+
+`top_N_pct` is the percentage of assigned issues covered by the top N
+actions by issue count. Useful for answering "if we staff the top 10
+actions, what fraction of the backlog do we address?"
 ```
 
 ## CLI

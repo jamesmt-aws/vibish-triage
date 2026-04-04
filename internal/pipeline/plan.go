@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,6 +101,16 @@ type planAction struct {
 	DependsOn    []string `json:"depends_on"`
 }
 
+// planSpread contains diagnostic metrics about action size distribution.
+type planSpread struct {
+	Gini            float64 `json:"gini"`
+	Top5Pct         float64 `json:"top_5_pct"`
+	Top10Pct        float64 `json:"top_10_pct"`
+	Top20Pct        float64 `json:"top_20_pct"`
+	MedianActionSize int    `json:"median_action_size"`
+	MaxActionSize    int    `json:"max_action_size"`
+}
+
 // planSummary is the summary stats written to plan-summary.json.
 type planSummary struct {
 	TotalIssues     int            `json:"total_issues"`
@@ -109,6 +120,7 @@ type planSummary struct {
 	ActionPlanCount int            `json:"action_plan_count"`
 	EMIterations    int            `json:"em_iterations"`
 	OrphanedIssues  int            `json:"orphaned_issues"`
+	Spread          planSpread     `json:"spread"`
 }
 
 // actionAssignment is the per-issue result from the E-step.
@@ -811,6 +823,7 @@ func writePlanSummary(dataDir string, events []planEvent, actions []planAction, 
 		ActionPlanCount: len(actions),
 		EMIterations:    iterations,
 		OrphanedIssues:  orphaned,
+		Spread:          computeSpread(actions),
 	}
 
 	for _, ev := range events {
@@ -830,4 +843,67 @@ func writePlanSummary(dataDir string, events []planEvent, actions []planAction, 
 		return err
 	}
 	return os.WriteFile(filepath.Join(dataDir, "plan-summary.json"), data, 0644)
+}
+
+// computeSpread calculates Gini coefficient and top-N coverage for action sizes.
+func computeSpread(actions []planAction) planSpread {
+	if len(actions) == 0 {
+		return planSpread{}
+	}
+
+	// Collect sizes sorted ascending for Gini.
+	sizes := make([]int, len(actions))
+	total := 0
+	maxSize := 0
+	for i, a := range actions {
+		sizes[i] = a.IssueCount
+		total += a.IssueCount
+		if a.IssueCount > maxSize {
+			maxSize = a.IssueCount
+		}
+	}
+	sort.Ints(sizes)
+
+	// Gini coefficient: sum of |xi - xj| for all pairs / (2 * n * sum).
+	// Equivalent: G = (2 * sum(i * xi) / (n * sum)) - (n+1)/n
+	n := len(sizes)
+	var weightedSum float64
+	for i, s := range sizes {
+		weightedSum += float64(i+1) * float64(s)
+	}
+	gini := (2*weightedSum/float64(n)/float64(total)) - float64(n+1)/float64(n)
+	if gini < 0 {
+		gini = 0
+	}
+
+	// Top-N coverage: sort descending, count unique issues in top N.
+	sort.Sort(sort.Reverse(sort.IntSlice(sizes)))
+	topNPct := func(topN int) float64 {
+		if topN > len(sizes) {
+			topN = len(sizes)
+		}
+		covered := 0
+		for _, s := range sizes[:topN] {
+			covered += s
+		}
+		if total == 0 {
+			return 0
+		}
+		return float64(covered) * 100 / float64(total)
+	}
+
+	// Median.
+	median := sizes[n/2]
+	if n%2 == 0 && n > 1 {
+		median = (sizes[n/2-1] + sizes[n/2]) / 2
+	}
+
+	return planSpread{
+		Gini:             math.Round(gini*100) / 100,
+		Top5Pct:          math.Round(topNPct(5)*10) / 10,
+		Top10Pct:         math.Round(topNPct(10)*10) / 10,
+		Top20Pct:         math.Round(topNPct(20)*10) / 10,
+		MedianActionSize: median,
+		MaxActionSize:    maxSize,
+	}
 }
