@@ -31,9 +31,9 @@ Return ONLY a JSON object with no other text.
 | Kind | Signal |
 |------|--------|
 | `bug_fix` | Clear behavioral bug with reproduction path |
-| `small_change` | Minor fix, docs, config |
+| `small_change` | Obviously correct fix: docs, config, typo, one-line change |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
-| `has_rfc` | Issue links to, references, or is an RFC/KEP/design doc |
+| `has_obvious_rfc` | A link to an RFC, KEP, or design doc is visible in the issue body or comments |
 | `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
 
 ## Action

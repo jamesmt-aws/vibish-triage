@@ -37,14 +37,20 @@ One consensus position per issue. No individual opinions.
 
 Each call returns a classification.
 
+**Memoization.** Classify results are cached by a hash of (issue +
+extraction + evaluation). On re-run, only issues whose inputs changed
+get re-classified. Cache lives in `data/.plan-cache/`. This makes
+iterating on the EM parameters cheap — classify runs once, subsequent
+plan runs skip it automatically.
+
 **kind** -- what type of thing is this:
 
 | Kind | Signal |
 |------|--------|
 | `bug_fix` | Clear behavioral bug with reproduction path |
-| `small_change` | Minor fix, docs, config |
+| `small_change` | Obviously correct fix: docs, config, typo, one-line change |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
-| `has_rfc` | Issue links to, references, or is an RFC/KEP/design doc |
+| `has_obvious_rfc` | A link to an RFC, KEP, or design doc is visible in the issue body or comments |
 | `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
 
 **action** -- what happens next:
@@ -82,6 +88,11 @@ theme in fix-themes.jsonl, group classified issues by action type
 The seed is deterministic code, no LLM call. It produces the initial
 action drafts that the EM loop refines.
 
+Issues without theme assignments are grouped by action type into
+`unthemed--{action}` buckets. This is expected -- the upstream aggregate
+step does not assign every issue to a theme. Unthemed issues still get
+assigned to actions during the E-step.
+
 #### E-step: Assign (Sonnet, parallel)
 
 For each classified issue, send: the classification, the extraction, and
@@ -108,8 +119,9 @@ Output: refined action drafts as JSONL.
 
 #### Convergence
 
-Iterate E-step + M-step up to 3 rounds. Stop early if assignment is
-stable (< 5% of issues change action between rounds).
+Default: 2 rounds (`--max-em-rounds`). Stop early if assignment is
+stable (< 5% of issues change action between rounds). A third round
+buys ~2% more stability at ~$15 extra cost; usually not worth it.
 
 ### Summary
 
@@ -144,11 +156,11 @@ Counts by kind, action, priority, plus EM iteration stats.
 ```json
 {
   "total_issues": 567,
-  "by_kind": {"bug_fix": 135, "small_change": 202, "needs_rfc": 210, "has_rfc": 6, "wont_do": 14},
+  "by_kind": {"bug_fix": 135, "small_change": 202, "needs_rfc": 210, "has_obvious_rfc": 6, "wont_do": 14},
   "by_action": {"accept": 278, "reject": 26, "assign_aws": 4, "needs_info": 29, "defer": 226},
   "by_priority": {"p0": 1, "p1": 42, "p2": 260, "p3": 264},
   "action_plan_count": 106,
-  "em_iterations": 3,
+  "em_iterations": 2,
   "orphaned_issues": 0
 }
 ```
@@ -157,9 +169,16 @@ Counts by kind, action, priority, plus EM iteration stats.
 
 ```
 ./vibish-triage plan --config examples/karpenter.yaml
+./vibish-triage plan --config examples/karpenter.yaml --max-em-rounds 3
 ```
 
-Uses the same `--data-dir`, `--timeout` flags as `run`.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | `triage.yaml` | Path to config file |
+| `--data-dir` | `./data` | Directory for input/output data |
+| `--prompts-dir` | `./prompts` | Directory containing prompt templates |
+| `--timeout` | `90m` | Max time per LLM phase |
+| `--max-em-rounds` | `2` | Maximum EM iterations for action plan |
 
 ## Cost and Timing
 
@@ -167,20 +186,18 @@ Measured on Karpenter (567 open issues, April 2026):
 
 | Phase | Model | Calls | Time | Cost |
 |-------|-------|-------|------|------|
-| Classify | Sonnet | 567 | 91s | $9.48 |
+| Classify (first run) | Sonnet | 567 | 91s | $9.48 |
+| Classify (cached) | — | 0 | instant | $0 |
 | Seed | code | 0 | instant | $0 |
-| Assign (round 1) | Sonnet | 567 | 55s | $7.90 |
-| Refine (round 1) | Opus | 1 | 3.5 min | $0.46 |
-| Assign (round 2) | Sonnet | 567 | 50s | $14.34 |
-| Refine (round 2) | Opus | 1 | 4 min | $0.51 |
-| Assign (round 3) | Sonnet | 567 | 44s | $15.88 |
-| Refine (round 3) | Opus | 1 | 4.5 min | $0.52 |
-| **Total (3 rounds)** | | | **~16 min** | **~$49** |
+| Assign (per round) | Sonnet | 567 | ~50s | ~$8-16 |
+| Refine (per round) | Opus | 1 | ~4 min | ~$0.50 |
+| **Total (2 rounds, first run)** | | | **~12 min** | **~$28** |
+| **Total (2 rounds, cached classify)** | | | **~10 min** | **~$18** |
 
-Assign cost increases each round because the action context grows as
-Opus refines descriptions. Classify dominates wall-clock time on the
-first run; subsequent runs could skip classify with a `--skip-classify`
-flag (not yet implemented).
+Assign cost increases each round because Opus refine produces longer
+action descriptions. At 2 rounds the total is roughly half the 3-round
+cost (~$49) with minimal quality loss (convergence was 15.7% → 5.5%
+between rounds 2 and 3).
 
 ## Validation
 

@@ -168,7 +168,7 @@ func validateEvaluate(dataDir string) error {
 
 // validatePlan checks plan-events.jsonl, action-plan.jsonl, and plan-summary.json per 08-plan.md.
 func validatePlan(dataDir string) error {
-	validKinds := map[string]bool{"bug_fix": true, "small_change": true, "needs_rfc": true, "has_rfc": true, "wont_do": true}
+	validKinds := map[string]bool{"bug_fix": true, "small_change": true, "needs_rfc": true, "has_obvious_rfc": true, "wont_do": true}
 	validActions := map[string]bool{"accept": true, "reject": true, "assign_aws": true, "rework": true, "needs_info": true, "defer": true}
 	validPriorities := map[string]bool{"p0": true, "p1": true, "p2": true, "p3": true}
 	validEfforts := map[string]bool{"trivial": true, "small": true, "medium": true, "large": true}
@@ -269,7 +269,7 @@ func validatePlan(dataDir string) error {
 			slog.Warn("plan distribution: needs_info rate high", "needs_info", ni, "total", total,
 				"rate", fmt.Sprintf("%.1f%%", float64(ni)*100/float64(total)))
 		}
-		for _, k := range []string{"bug_fix", "small_change", "needs_rfc", "has_rfc", "wont_do"} {
+		for _, k := range []string{"bug_fix", "small_change", "needs_rfc", "has_obvious_rfc", "wont_do"} {
 			if kindCounts[k] == 0 {
 				slog.Warn("plan distribution: missing kind", "kind", k)
 			}

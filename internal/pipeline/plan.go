@@ -3,6 +3,8 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -18,6 +20,37 @@ import (
 	"github.com/jamesmt/vibish-triage/internal/config"
 	"github.com/jamesmt/vibish-triage/internal/inference"
 )
+
+// planCache provides content-addressed memoization of classify results.
+type planCache struct {
+	dir string
+}
+
+func newPlanCache(dataDir string) *planCache {
+	dir := filepath.Join(dataDir, ".plan-cache")
+	os.MkdirAll(dir, 0755)
+	return &planCache{dir: dir}
+}
+
+func (c *planCache) key(parts ...[]byte) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write(p)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+func (c *planCache) get(key string) (json.RawMessage, bool) {
+	data, err := os.ReadFile(filepath.Join(c.dir, key+".json"))
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(data), true
+}
+
+func (c *planCache) put(key string, data json.RawMessage) {
+	os.WriteFile(filepath.Join(c.dir, key+".json"), data, 0644)
+}
 
 // planEvent is a classified event written to plan-events.jsonl.
 type planEvent struct {
@@ -86,7 +119,7 @@ type actionAssignment struct {
 }
 
 // Plan runs the planning pipeline: classify, then EM-style action plan.
-func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, timeout time.Duration) error {
+func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, timeout time.Duration, maxEMRounds int) error {
 	os.MkdirAll(dataDir, 0755)
 
 	sonnet, err := bedrock.NewClient(ctx, "claude-sonnet")
@@ -109,7 +142,7 @@ func Plan(ctx context.Context, cfg *config.Config, dataDir, promptsDir string, t
 
 	// Phase 2: EM-style action plan.
 	stepCtx, cancel = context.WithTimeout(ctx, timeout)
-	actions, iterations, orphaned, err := runPlanEM(stepCtx, sonnet, opus, events, dataDir)
+	actions, iterations, orphaned, err := runPlanEM(stepCtx, sonnet, opus, events, dataDir, maxEMRounds)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("plan EM failed: %w", err)
@@ -143,77 +176,103 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 	if len(extractions) != len(issues) {
 		return nil, fmt.Errorf("extracted.jsonl has %d lines, issues.jsonl has %d", len(extractions), len(issues))
 	}
-	slog.Info("plan-classify: starting", "issues", len(extractions))
+	cache := newPlanCache(dataDir)
 
-	system, err := renderPrompt(filepath.Join(promptsDir, "plan.md"), templateData{
-		Project:       cfg.Project,
-		DomainContext: cfg.DomainContext,
-		IssueCount:    len(extractions),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rendering plan prompt: %w", err)
-	}
-
-	cwnd := newCwndController(initialCwnd, maxCwnd)
+	// Check cache hits before starting.
 	results := make([]json.RawMessage, len(extractions))
-	var totalUsage inference.Usage
-	var usageMu sync.Mutex
-	var completed int64
-	var errors int64
-
-	var wg sync.WaitGroup
+	var toClassify []int
+	var cacheHits int64
 	for i := range extractions {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			cwnd.acquire()
-
-			var ext struct {
-				Number int    `json:"number"`
-				Title  string `json:"title"`
-				Repo   string `json:"repo"`
-			}
-			json.Unmarshal(extractions[idx], &ext)
-
-			user := fmt.Sprintf("Issue #%d: %s\n\nRaw issue:\n%s\n\nExtraction:\n%s\n\nEvaluation:\n%s",
-				ext.Number, ext.Title, string(issues[idx]), string(extractions[idx]), string(evaluations[idx]))
-
-			text, usage, throttled, err := converseWithRetry(ctx, client, system, user)
-			usageMu.Lock()
-			totalUsage = totalUsage.Add(usage)
-			usageMu.Unlock()
-
-			if throttled {
-				cwnd.onThrottle()
-			} else {
-				cwnd.onSuccess()
-			}
-
-			if err != nil {
-				atomic.AddInt64(&errors, 1)
-				slog.Error("plan-classify: call failed", "index", idx, "error", err)
-				return
-			}
-			results[idx] = json.RawMessage(stripCodeFences(text))
-			n := atomic.AddInt64(&completed, 1)
-			if n%50 == 0 {
-				slog.Info("plan-classify: progress", "completed", n, "total", len(extractions))
-			}
-		}(i)
+		k := cache.key(issues[i], extractions[i], evaluations[i])
+		if cached, ok := cache.get(k); ok {
+			results[i] = cached
+			cacheHits++
+		} else {
+			toClassify = append(toClassify, i)
+		}
 	}
-	wg.Wait()
+	slog.Info("plan-classify: starting", "issues", len(extractions), "cached", cacheHits, "to_classify", len(toClassify))
 
-	slog.Info("plan-classify: done",
-		"completed", completed, "errors", errors,
-		"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
-		"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
-
-	if total := int64(len(extractions)); total > 0 && errors*100/total > 10 {
-		slog.Warn("plan-classify: high error rate",
-			"errors", errors, "total", total,
-			"rate", fmt.Sprintf("%.1f%%", float64(errors)*100/float64(total)))
+	if len(toClassify) == 0 {
+		slog.Info("plan-classify: all cached, skipping LLM calls")
+		goto wrapResults
 	}
 
+	{
+		system, err := renderPrompt(filepath.Join(promptsDir, "plan.md"), templateData{
+			Project:       cfg.Project,
+			DomainContext: cfg.DomainContext,
+			IssueCount:    len(extractions),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("rendering plan prompt: %w", err)
+		}
+
+		cwnd := newCwndController(initialCwnd, maxCwnd)
+		var totalUsage inference.Usage
+		var usageMu sync.Mutex
+		var completed int64
+		var errors int64
+
+		var wg sync.WaitGroup
+		for _, idx := range toClassify {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				cwnd.acquire()
+
+				var ext struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					Repo   string `json:"repo"`
+				}
+				json.Unmarshal(extractions[idx], &ext)
+
+				user := fmt.Sprintf("Issue #%d: %s\n\nRaw issue:\n%s\n\nExtraction:\n%s\n\nEvaluation:\n%s",
+					ext.Number, ext.Title, string(issues[idx]), string(extractions[idx]), string(evaluations[idx]))
+
+				text, usage, throttled, err := converseWithRetry(ctx, client, system, user)
+				usageMu.Lock()
+				totalUsage = totalUsage.Add(usage)
+				usageMu.Unlock()
+
+				if throttled {
+					cwnd.onThrottle()
+				} else {
+					cwnd.onSuccess()
+				}
+
+				if err != nil {
+					atomic.AddInt64(&errors, 1)
+					slog.Error("plan-classify: call failed", "index", idx, "error", err)
+					return
+				}
+				result := json.RawMessage(stripCodeFences(text))
+				results[idx] = result
+				// Cache the result.
+				k := cache.key(issues[idx], extractions[idx], evaluations[idx])
+				cache.put(k, result)
+				n := atomic.AddInt64(&completed, 1)
+				if n%50 == 0 {
+					slog.Info("plan-classify: progress", "completed", n, "total", len(toClassify))
+				}
+			}(idx)
+		}
+		wg.Wait()
+
+		slog.Info("plan-classify: done",
+			"completed", completed, "errors", errors,
+			"input_tokens", totalUsage.InputTokens, "output_tokens", totalUsage.OutputTokens,
+			"cost", fmt.Sprintf("$%.4f", totalUsage.Cost()))
+
+		if total := int64(len(toClassify)); total > 0 && errors*100/total > 10 {
+			slog.Warn("plan-classify: high error rate",
+				"errors", errors, "total", total,
+				"rate", fmt.Sprintf("%.1f%%", float64(errors)*100/float64(total)))
+		}
+	}
+
+wrapResults:
 	now := time.Now().UTC().Format(time.RFC3339)
 	var events []planEvent
 	var eventResults []json.RawMessage
@@ -266,7 +325,7 @@ func runPlanClassify(ctx context.Context, client inference.Client, cfg *config.C
 }
 
 // runPlanEM runs the EM-style action plan: seed, then iterate assign+refine.
-func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []planEvent, dataDir string) ([]planAction, int, int, error) {
+func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []planEvent, dataDir string, maxRounds int) ([]planAction, int, int, error) {
 	// Load themes for seed.
 	themeLines, err := readJSONL(filepath.Join(dataDir, "fix-themes.jsonl"))
 	if err != nil {
@@ -292,7 +351,6 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 	actions := seedActions(events, themeLines)
 	slog.Info("plan-em: seed", "actions", len(actions))
 
-	const maxIterations = 3
 	const stabilityThreshold = 0.05 // 5%
 
 	var iterations int
@@ -300,7 +358,7 @@ func runPlanEM(ctx context.Context, sonnet, opus inference.Client, events []plan
 
 	var lastAssignments map[int][]string
 
-	for iter := range maxIterations {
+	for iter := range maxRounds {
 		iterations = iter + 1
 		slog.Info("plan-em: iteration", "round", iterations)
 
