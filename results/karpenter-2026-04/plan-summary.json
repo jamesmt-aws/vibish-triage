@@ -1,0 +1,33 @@
+{
+  "total_issues": 567,
+  "by_kind": {
+    "bug_fix": 154,
+    "has_obvious_rfc": 13,
+    "needs_rfc": 202,
+    "small_change": 184,
+    "wont_do": 14
+  },
+  "by_action": {
+    "accept": 295,
+    "assign_aws": 2,
+    "defer": 222,
+    "needs_info": 25,
+    "reject": 23
+  },
+  "by_severity": {
+    "high": 29,
+    "low": 223,
+    "medium": 315
+  },
+  "action_plan_count": 94,
+  "em_iterations": 2,
+  "orphaned_issues": 15,
+  "spread": {
+    "gini": 0.5,
+    "top_5_pct": 30.1,
+    "top_10_pct": 42.9,
+    "top_20_pct": 57.1,
+    "median_action_size": 4,
+    "max_action_size": 79
+  }
+}
