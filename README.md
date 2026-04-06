@@ -15,19 +15,39 @@ severity-weighted impact: `severity × issue_count`.
 ## Quick start
 
 ```bash
+# 1. Build
 go build -o vibish-triage .
 
-# Run the full pipeline on Karpenter
+# 2. Run the full pipeline (~$22, ~8 min)
 ./vibish-triage run --config examples/karpenter.yaml
 
-# Or run one step at a time
+# 3. Classify issues and produce an action plan (~$32, ~15 min)
+./vibish-triage plan --config examples/karpenter.yaml
+```
+
+To reproduce the Karpenter April 2026 analysis from [the triage paper](results/karpenter-2026-04/):
+
+```bash
+git checkout 4b2df34
+go build -o vibish-triage .
+./vibish-triage run --config examples/karpenter.yaml
+./vibish-triage plan --config examples/karpenter.yaml
+```
+
+This requires `gh` authenticated and AWS credentials with Bedrock model
+access for Claude Sonnet, Opus, and Haiku (cross-region inference
+profiles). Enable model access in the AWS console under Bedrock > Model
+access. Total cost: ~$54. The pre-computed results are in
+`results/karpenter-2026-04/` for inspection without re-running.
+
+### Running one step at a time
+
+```bash
 ./vibish-triage run --config examples/karpenter.yaml --step download
 ./vibish-triage run --config examples/karpenter.yaml --step extract
 ./vibish-triage run --config examples/karpenter.yaml --step label
 ./vibish-triage run --config examples/karpenter.yaml --step aggregate
 ./vibish-triage run --config examples/karpenter.yaml --step evaluate
-
-# After a full run, classify issues and produce an action plan
 ./vibish-triage plan --config examples/karpenter.yaml
 ```
 
