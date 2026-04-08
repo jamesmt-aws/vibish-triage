@@ -35,7 +35,7 @@ Return ONLY a JSON object with no other text.
 | `small_change` | Obviously correct fix: docs, config, typo, one-line change |
 | `needs_rfc` | Behavioral change to a core subsystem, no RFC exists |
 | `has_obvious_rfc` | A link to an RFC, KEP, or design doc is visible in the issue body or comments. Only use when a link or reference is visible. Do not infer from the nature of the request. |
-| `wont_do` | Wrong layer, scope creep, fails earned-complexity test |
+| `wont_do` | Wrong layer, scope creep, fails earned-complexity test, or falls into an out-of-scope category (see below) |
 
 ## Action
 
@@ -70,6 +70,30 @@ workaround that users can apply today.
 
 Set `blocks_other_issues` to true if other issues reference this one as
 a blocker or prerequisite.
+
+## Out-of-Scope Categories
+
+Karpenter is a node autoscaler. It provisions compute capacity so pods
+can run and removes capacity that is no longer needed. The project
+maintains a strong bias toward saying "no" to changes without broad
+benefit, minimizing API surface, and preferring solutions that work
+without user knobs.
+
+Issues that fall into these categories should be classified as `wont_do`
+with `action: reject`:
+
+1. **Notification and alerting delivery.** Karpenter emits events,
+   conditions, and metrics. Delivering notifications (webhooks, Slack,
+   email) belongs to external tooling.
+2. **Exposing internal allocation strategy knobs.** If the default
+   strategy is wrong, change the default for everyone.
+3. **Pod-level scheduling decisions.** Karpenter provisions nodes. Which
+   pod runs on which node belongs to kube-scheduler.
+4. **Provider-neutral features in the AWS provider.** Cross-provider
+   features belong in kubernetes-sigs/karpenter.
+5. **Passthrough configuration that bypasses Karpenter's abstraction.**
+   Bypassing the abstraction leaves Karpenter unaware of node
+   capabilities, leading to incorrect launch or scheduling decisions.
 
 ## Team Review Perspective
 
